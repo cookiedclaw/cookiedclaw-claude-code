@@ -146,13 +146,40 @@ Supermemory ships as a first-class CC plugin (not an MCP server) — auto-inject
      - `Use ~/.supermemory-claude/settings.json instead` — point them at https://supermemory.ai/docs/integrations/claude-code
 5. Confirm: *"Supermemory set up. Restart your shell (so env exports) before restarting Claude Code at the end."*
 
-## Step 5 — Wrap up
+## Step 5 — Write bootstrap.md
+
+Write a concise summary of what just got configured to `~/.cookiedclaw/bootstrap.md`. The channel server reads this file at startup and surfaces it to CC, so every future session knows what's available without re-asking.
+
+Use `Write` to create / overwrite the file. Format example:
+
+```markdown
+# cookiedclaw bootstrap
+
+Configured on 2026-04-26.
+
+## Telegram
+- Bot token: set (saved in `~/.cookiedclaw/keys.env` as `TELEGRAM_BOT_TOKEN`)
+
+## Integrations
+- fal.ai (image generation): enabled — MCP server `fal-ai` registered at user scope
+- Supermemory (long-term memory): not configured
+
+## Permission preference
+- Default permission mode (Claude asks before risky tool calls; relayed to Telegram via Allow/Deny buttons)
+```
+
+Keep it factual and short — under 30 lines. Don't include actual key values, just "set" / "not configured". Don't include personality or user identity (that lives in soul.md, written by the `/cookiedclaw:soul` skill).
+
+If the file already exists from a previous setup run, replace it with the new state — don't try to preserve old content; this skill is the source of truth for setup state.
+
+## Step 6 — Wrap up
 
 Summarize what got configured in one short list. Then:
 
 - If they configured the Telegram token in this session: tell them **restart Claude Code now** so the channel server picks up the token and the bot starts polling. Their Telegram bot will be live the moment CC restarts.
 - If only optional integrations got added: same restart instruction, but explain it's just for those new MCP servers / plugins to load.
 - Mention `~/.cookiedclaw/keys.env` is where keys live (chmod 600). They can edit it directly to rotate keys.
+- Suggest running `/cookiedclaw:soul` next so the bot learns the user's name, timezone, and communication style. ("Setup is what cookiedclaw can do; soul is who you are to it.")
 - If they configured nothing (just looked around): say so cheerfully and remind them `/cookiedclaw:setup` is always there.
 
 ## Don'ts

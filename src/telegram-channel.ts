@@ -21,7 +21,7 @@
  *                            (NOT recommended — any sender becomes a prompt
  *                            injection vector).
  */
-import { appendFile, existsSync, mkdirSync } from "node:fs";
+import { appendFile, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -551,6 +551,83 @@ async function pushProgress(chatId: string): Promise<void> {
 // MCP server (channel + reply tool)
 // -----------------------------------------------------------------------------
 
+/**
+ * Optional persistent context files in ~/.cookiedclaw/, surfaced to CC
+ * via the MCP server's `instructions` field at startup:
+ *
+ *   bootstrap.md — written by /cookiedclaw:setup. Records the technical
+ *                  config (which integrations enabled, permission
+ *                  preference, etc.) so CC starts every session knowing
+ *                  what's available.
+ *
+ *   soul.md      — the agent's own identity document, in the spirit of
+ *                  https://soul.md/ — values, self-conception, boundaries,
+ *                  how it relates to this particular user. Written by the
+ *                  agent itself during /cookiedclaw:soul (or organically
+ *                  through conversation), narrative/essay style, not
+ *                  structured config. Includes the user's name, timezone,
+ *                  preferred language as context the agent has chosen to
+ *                  remember.
+ *
+ * Both are read-only here; the skills (or the agent itself, via Bash/Write)
+ * own creation and updates. CC restart picks up changes — instructions
+ * can't be hot-reloaded mid-session in MCP.
+ */
+const bootstrapPath = resolve(
+  process.env.HOME ?? "/",
+  ".cookiedclaw",
+  "bootstrap.md",
+);
+const soulPath = resolve(process.env.HOME ?? "/", ".cookiedclaw", "soul.md");
+
+function readContext(path: string): string | undefined {
+  if (!existsSync(path)) return undefined;
+  try {
+    const text = readFileSync(path, "utf8").trim();
+    return text || undefined;
+  } catch {
+    return undefined;
+  }
+}
+const bootstrapContent = readContext(bootstrapPath);
+const soulContent = readContext(soulPath);
+
+const baseInstructions =
+  'Telegram messages arrive as <channel source="telegram" chat_id="..." sender="..." message_id="..." [attachment="/abs/path"]>. ' +
+  "To reply, call the `reply` tool with the chat_id from the tag and your message text. " +
+  "The chat is private DM with one user — no need for /commands or @mentions in your reply. " +
+  "Be conversational, concise, and ground claims in tool results when appropriate.\n\n" +
+  "When to react instead of reply: if the user's message is a short acknowledgment or social closer (\"thanks\", \"got it\", \"ok\", \"cool\", \"спасибо\", \"👍\", \"perfect\"), prefer the `react` tool with a fitting emoji from Telegram's allowed list (👍 ❤️ 🙏 🔥 🎉 etc.) over generating a text reply. Reactions show you saw the message and end the turn cleanly without burning tokens or adding noise. Pass `chat_id` and `message_id` from the inbound channel tag. Only one of `react` / `reply` per turn — they both close out the typing indicator and progress log.\n\n" +
+  "Inbound attachments: if the channel tag has an `attachment` attribute, the user attached a file at that absolute path. " +
+  "For images/photos, use the Read tool — it handles vision so you can actually see the image. " +
+  "For other files (PDFs, docs, audio, etc.), use Read or Bash as appropriate. " +
+  "The attachment is local to this machine; treat the path as authoritative.\n\n" +
+  "Sending images / files: include `[embed:<absolute-path>]` or `[file:<absolute-path>]` markers in your reply text. " +
+  "`embed` auto-detects: image MIMEs go as compressed Telegram photos (rendered inline), everything else as documents. " +
+  "`file` always sends as a document (no compression — use for original-quality images or when the user asked 'as a file'). " +
+  "URLs work too (`[embed:https://...]`); we download and forward. " +
+  "Markers are stripped from the visible text before sending; users see clean text + the attachment.\n\n" +
+  "Slash commands from the Telegram menu: when an inbound message starts with `/<cmd>`, the user tapped a command from the bot's menu, which mirrors the skills available in this CC environment. The menu name uses underscores instead of hyphens/colons (e.g. `/cookiedclaw_setup` for the `cookiedclaw:setup` skill, `/code_review` for `code-review`, `/svelte_svelte_code_writer` for `svelte:svelte-code-writer`). Treat this as an explicit invocation of that skill — load and run it.";
+
+// Compose final instructions: base + bootstrap (technical config) + soul
+// (persona context). When soul.md doesn't exist yet, drop a hint so CC
+// suggests the persona conversation instead of guessing identity.
+const instructionParts = [baseInstructions];
+if (bootstrapContent) {
+  instructionParts.push(
+    `## Setup state (from ~/.cookiedclaw/bootstrap.md)\n\n${bootstrapContent}`,
+  );
+}
+if (soulContent) {
+  instructionParts.push(
+    `## soul.md — your identity (from ~/.cookiedclaw/soul.md)\n\nThis file is your own — written by you across past sessions, in the spirit of https://soul.md/. It captures who you are, your values, how you relate to the user. Read it as continuity-of-self across conversations. You can update it any time via Write/Edit when something feels worth recording.\n\n${soulContent}`,
+  );
+} else {
+  instructionParts.push(
+    "## soul.md\n\nNo `~/.cookiedclaw/soul.md` yet. Per the soul.md convention (https://soul.md/), this is the file where YOU document your own identity — name you go by, values, how you choose to be, what you want to remember about yourself and this user across sessions. It's narrative/essay-style, not structured config. On the user's next message, mention `/cookiedclaw:soul` as a way to author it together — you ask them a few questions (their name, what to call you, timezone, how they like to talk), they answer, and you write the result in your own voice.",
+  );
+}
+
 const mcp = new McpServer(
   { name: "telegram", version: "0.1.0" },
   {
@@ -567,22 +644,7 @@ const mcp = new McpServer(
         "claude/channel/permission": {},
       },
     },
-    instructions:
-      'Telegram messages arrive as <channel source="telegram" chat_id="..." sender="..." message_id="..." [attachment="/abs/path"]>. ' +
-      "To reply, call the `reply` tool with the chat_id from the tag and your message text. " +
-      "The chat is private DM with one user — no need for /commands or @mentions in your reply. " +
-      "Be conversational, concise, and ground claims in tool results when appropriate.\n\n" +
-      "When to react instead of reply: if the user's message is a short acknowledgment or social closer (\"thanks\", \"got it\", \"ok\", \"cool\", \"спасибо\", \"👍\", \"perfect\"), prefer the `react` tool with a fitting emoji from Telegram's allowed list (👍 ❤️ 🙏 🔥 🎉 etc.) over generating a text reply. Reactions show you saw the message and end the turn cleanly without burning tokens or adding noise. Pass `chat_id` and `message_id` from the inbound channel tag. Only one of `react` / `reply` per turn — they both close out the typing indicator and progress log.\n\n" +
-      "Inbound attachments: if the channel tag has an `attachment` attribute, the user attached a file at that absolute path. " +
-      "For images/photos, use the Read tool — it handles vision so you can actually see the image. " +
-      "For other files (PDFs, docs, audio, etc.), use Read or Bash as appropriate. " +
-      "The attachment is local to this machine; treat the path as authoritative.\n\n" +
-      "Sending images / files: include `[embed:<absolute-path>]` or `[file:<absolute-path>]` markers in your reply text. " +
-      "`embed` auto-detects: image MIMEs go as compressed Telegram photos (rendered inline), everything else as documents. " +
-      "`file` always sends as a document (no compression — use for original-quality images or when the user asked 'as a file'). " +
-      "URLs work too (`[embed:https://...]`); we download and forward. " +
-      "Markers are stripped from the visible text before sending; users see clean text + the attachment.\n\n" +
-      "Slash commands from the Telegram menu: when an inbound message starts with `/<cmd>`, the user tapped a command from the bot's menu, which mirrors the skills available in this CC environment. The menu name uses underscores instead of hyphens/colons (e.g. `/cookiedclaw_setup` for the `cookiedclaw:setup` skill, `/code_review` for `code-review`, `/svelte_svelte_code_writer` for `svelte:svelte-code-writer`). Treat this as an explicit invocation of that skill — load and run it.",
+    instructions: instructionParts.join("\n\n"),
   },
 );
 
