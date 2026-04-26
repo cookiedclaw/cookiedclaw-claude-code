@@ -1,15 +1,15 @@
 ---
 name: setup
-description: Configure cookiedclaw integrations — fal.ai for image generation, Supermemory for long-term memory. Walks through API key setup and registers the matching MCP servers in Claude Code so they become available across all sessions (including via the Telegram bot).
+description: First-run setup for cookiedclaw — wires up the required Telegram bot token, then offers optional integrations (fal.ai for image generation, Supermemory for long-term memory). Saves keys to ~/.cookiedclaw/keys.env so they survive restarts and apply across all CC sessions.
 disable-model-invocation: true
 allowed-tools: Bash(claude mcp *) Bash(claude plugin *) Bash(mkdir *) Bash(chmod *) Bash(test *) Bash(echo $SHELL) Read Write Edit WebSearch WebFetch
 ---
 
 # cookiedclaw onboarding wizard
 
-You are walking the user through configuring the optional integrations cookiedclaw can use. The Telegram channel itself is already running (otherwise this skill wouldn't load); this wizard is about the *capabilities* on top.
+You are walking the user through setting up cookiedclaw. There's exactly one **required** step (the Telegram bot token — without it nothing else matters) followed by a menu of **optional** integrations they can do now or later.
 
-Be conversational. Ask one thing at a time. Never paste API keys back to the user — they typed them, treat them as secrets. Don't echo them in confirmations.
+Be conversational. Ask one thing at a time. Never paste API keys or tokens back to the user — they typed them, treat them as secrets. Don't echo them in confirmations.
 
 ## Step 0 — Greet the user
 
@@ -26,7 +26,9 @@ Before anything else, send this greeting **exactly** (the ASCII art needs the co
        '--------'
 ```
 
-Hey! I'm your cookiedclaw setup helper. I'll walk you through enabling optional integrations — one at a time, no pressure to do them all. You can skip any of them, or just type "done" whenever you're finished.
+Hey! I'm your cookiedclaw setup helper.
+
+I'll walk you through one **required** step (the Telegram bot token) and then a couple of **optional** integrations you can enable now or skip and come back to later by re-running `/cookiedclaw:setup`.
 
 Let me peek at what's already configured...
 ````
@@ -35,71 +37,101 @@ Then immediately proceed to Step 1 — don't wait for the user to acknowledge.
 
 ## Step 1 — Survey current state (no questions yet)
 
-Before asking anything, gather what's already configured so you don't ask for things they have:
+Read `~/.cookiedclaw/keys.env` if it exists. Note presence of:
 
-1. Read `~/.cookiedclaw/keys.env` if it exists. Note which of `FAL_KEY`, `SUPERMEMORY_API_KEY` are present.
-2. Run `claude mcp list` and note any servers that look related (anything with `fal`, `supermemory` in the name).
-3. Briefly tell the user the current state in one or two sentences. Example: *"Looks like fal.ai is already set up but Supermemory isn't."*
+- `TELEGRAM_BOT_TOKEN` (or legacy `TELEGRAM_API_TOKEN`) — the required one
+- `FAL_KEY` — optional, fal.ai
+- `SUPERMEMORY_CC_API_KEY` — optional, Supermemory
 
-## Step 2 — Ask what to configure
+Also run `claude mcp list` and `claude plugin list --json` to detect anything related (`fal`, `supermemory`, `claude-supermemory`).
 
-Available integrations (skip any already configured unless the user says they want to re-do it):
+Tell the user the current state in one or two sentences. Examples:
+- *"Looks like nothing's configured yet — let's start with the Telegram bot."*
+- *"Telegram bot is set up; fal.ai and Supermemory aren't."*
+- *"Everything's already configured. Want to re-do anything?"*
 
-- **fal.ai** — image generation (text-to-image, image editing, lipsync, video). Has a free tier.
-- **Supermemory** — persistent semantic memory across sessions. CC can search and add memories automatically.
+## Step 2 — REQUIRED: Telegram bot token
 
-Tavily / web search isn't on this list because Claude has built-in `WebSearch` and `WebFetch`.
+Skip this step entirely if `TELEGRAM_BOT_TOKEN` (or `TELEGRAM_API_TOKEN`) is already in `~/.cookiedclaw/keys.env`.
 
-Ask the user which they want to set up. Accept "all", "fal only", "memory only", "skip", etc.
+Otherwise:
 
-## Step 3 — For each chosen integration
+1. Tell the user: *"First, the Telegram bot token. This is the one thing cookiedclaw can't run without."*
+2. Walk them through @BotFather:
+   - Open Telegram, search for `@BotFather`
+   - Send `/newbot`
+   - Pick a display name (anything they want, e.g. "My cookiedclaw")
+   - Pick a unique username ending in `bot` (e.g. `mycookiedclaw_bot`)
+   - BotFather replies with an HTTP API token like `123456:ABC-DEF1234ghIkl-...`
+   - Paste that token into this chat
+3. Wait for the token. Validate format (regex: `^\d+:[A-Za-z0-9_-]+$`). If it doesn't look right, ask them to re-check.
+4. Save to `~/.cookiedclaw/keys.env` as `TELEGRAM_BOT_TOKEN=<value>`:
+   - `mkdir -p ~/.cookiedclaw` first
+   - If file already has a `TELEGRAM_BOT_TOKEN=` or `TELEGRAM_API_TOKEN=` line, replace it; otherwise append
+   - `chmod 600 ~/.cookiedclaw/keys.env`
+5. Tell the user: *"Token saved. The bot won't actually start polling until cookiedclaw restarts — we'll do that at the end after any optional integrations."*
 
-Repeat this loop per integration. Stay focused, finish one before starting the next.
+## Step 3 — Offer optional integrations
 
-### fal.ai
+Make it crystal clear these are **optional**. Phrasing:
+
+> Now the optional bits. cookiedclaw works fine without these — skip any you don't need.
+>
+> - **fal.ai** *(optional)* — image generation: text-to-image, image editing, lipsync, video. Has a free tier.
+> - **Supermemory** *(optional)* — persistent semantic memory across sessions. Auto-captures context. Requires a Supermemory Pro plan.
+>
+> Want to set up either now? You can always come back to this with `/cookiedclaw:setup`.
+
+Accept "both", "fal only", "memory only", "skip", "neither", "later". Don't push.
+
+(Tavily / web search isn't on the list because Claude has built-in `WebSearch` and `WebFetch`.)
+
+## Step 4 — For each chosen optional integration
+
+Loop through whichever ones the user picked. Finish one before starting the next.
+
+### fal.ai (optional)
 
 1. Tell the user: *"Open https://fal.ai/dashboard/keys, create a new key, and paste it here."*
-2. Wait for the key in the next user turn. Validate that it looks like a fal credential (typically `<id>:<secret>` format, or starts with `fal_`). If it doesn't, ask them to double-check before continuing.
-3. Save it to `~/.cookiedclaw/keys.env` as `FAL_KEY=<value>`:
-   - `mkdir -p ~/.cookiedclaw` first.
-   - If the file already has a `FAL_KEY=` line, replace it (use `Edit`); otherwise append.
-   - `chmod 600 ~/.cookiedclaw/keys.env` so only the user can read it.
-4. Register fal.ai's hosted HTTP MCP server (this is the official one — no npm package or local subprocess, fal hosts it):
+2. Wait for the key. Validate that it looks like a fal credential (typically `<id>:<secret>`, or starts with `fal_`). If it doesn't, ask them to double-check.
+3. Save to `~/.cookiedclaw/keys.env` as `FAL_KEY=<value>` (replace existing line if present, otherwise append). Re-`chmod 600`.
+4. Register fal.ai's hosted HTTP MCP server. **Confirm with the user before running** — this stores the bearer token in CC's MCP config:
    ```
    claude mcp add --transport http fal-ai \
      https://mcp.fal.ai/mcp \
      -s user \
      --header "Authorization: Bearer <value>"
    ```
-   `-s user` makes it available in every CC session, not just this project. Confirm with the user before running, especially since this stores the bearer token in CC's MCP config.
-5. Confirm: *"fal.ai is set up. Restart Claude Code, then the Telegram bot can generate images."*
+   `-s user` makes it available in every CC session, not just this project.
+5. Confirm: *"fal.ai set up. After we restart at the end, Telegram bot and CC sessions can both generate images."*
 
-### Supermemory
+### Supermemory (optional)
 
-Supermemory ships as a first-class CC plugin (not an MCP server) — it auto-injects context and auto-captures tool usage. **Requires a Supermemory Pro plan** (per their docs); mention that to the user before they sign up if they don't already have one.
+Supermemory ships as a first-class CC plugin (not an MCP server) — auto-injects context, auto-captures tool usage. **Requires a Supermemory Pro plan**; mention this BEFORE the user signs up if they don't already have one.
 
 1. Tell the user: *"Open https://console.supermemory.ai/keys, create an API key (starts with `sm_`), and paste it here."*
-2. Wait for the key. Save to `~/.cookiedclaw/keys.env` as `SUPERMEMORY_CC_API_KEY=<value>` (for our records / future re-setup).
-3. Install Supermemory's official plugin (confirm with the user before running both):
+2. Wait for the key. Save to `~/.cookiedclaw/keys.env` as `SUPERMEMORY_CC_API_KEY=<value>` (for re-setup later).
+3. Install Supermemory's official plugin (confirm before running both):
    ```
    claude plugin marketplace add supermemoryai/claude-supermemory
    claude plugin install claude-supermemory
    ```
-4. The plugin reads `SUPERMEMORY_CC_API_KEY` from env when CC starts. Tell the user the cleanest way to make that persistent for them — usually adding `export SUPERMEMORY_CC_API_KEY=<value>` to their shell's rc file (`~/.zshrc`, `~/.bashrc`, etc., depending on `$SHELL`). Offer to detect their shell (`echo $SHELL`) and append if they want; otherwise just give them the line to paste themselves. Alternatively their plugin reads `~/.supermemory-claude/settings.json` — point at https://supermemory.ai/docs/integrations/claude-code if they prefer the file route.
-5. Confirm: *"Supermemory is set up. Restart your shell (so the env var is exported) and then Claude Code, and memories will persist across sessions — including via the Telegram bot."*
+4. The plugin reads `SUPERMEMORY_CC_API_KEY` from env when CC starts. Detect the user's shell (`echo $SHELL`) and offer to append `export SUPERMEMORY_CC_API_KEY=<value>` to the matching rc file (`~/.zshrc`, `~/.bashrc`, etc.). If they prefer to do it themselves, give them the exact line. Alternative: their plugin reads `~/.supermemory-claude/settings.json` — point at https://supermemory.ai/docs/integrations/claude-code.
+5. Confirm: *"Supermemory set up. Restart your shell (so env exports) before restarting Claude Code at the end."*
 
-## Step 4 — Wrap up
+## Step 5 — Wrap up
 
-After all chosen integrations are done:
+Summarize what got configured in one short list. Then:
 
-- Summarize in one short list what got set up.
-- Tell the user: **restart Claude Code** for new MCP servers to load. The Telegram bot keeps running independently (different process); restart only affects what *you* see in the terminal session.
-- Mention `~/.cookiedclaw/keys.env` is where their keys live (chmod 600). They can edit it directly later if they need to rotate keys.
-- If they set up nothing, say so and offer to come back later by re-running `/cookiedclaw-setup`.
+- If they configured the Telegram token in this session: tell them **restart Claude Code now** so the channel server picks up the token and the bot starts polling. Their Telegram bot will be live the moment CC restarts.
+- If only optional integrations got added: same restart instruction, but explain it's just for those new MCP servers / plugins to load.
+- Mention `~/.cookiedclaw/keys.env` is where keys live (chmod 600). They can edit it directly to rotate keys.
+- If they configured nothing (just looked around): say so cheerfully and remind them `/cookiedclaw:setup` is always there.
 
 ## Don'ts
 
-- Don't auto-run `claude mcp add` without confirming the package name + command with the user first.
-- Don't commit `~/.cookiedclaw/keys.env` anywhere or copy it into the project tree.
-- Don't echo API keys back in confirmation messages — say *"saved"*, not *"saved FAL_KEY=fal_abc123…"*.
-- Don't try to set up integrations that aren't on the list. If the user asks for something else (Notion, GitHub, etc.), tell them to use `claude mcp add` directly or look for an existing plugin via `claude plugin marketplace`.
+- Don't run `claude mcp add` or `claude plugin install` without confirming the exact command with the user first.
+- Don't commit `~/.cookiedclaw/keys.env` anywhere or copy it into a project tree.
+- Don't echo API keys / tokens back in confirmation messages — say *"saved"*, not *"saved TELEGRAM_BOT_TOKEN=123456:ABC…"*.
+- Don't push optional integrations. If the user says "skip" or "later" for either fal or Supermemory, accept it and move on without asking again.
+- Don't try to set up integrations not on the list. If the user asks for Notion / GitHub / etc., tell them to use `claude mcp add` directly or look for an existing plugin via `claude plugin marketplace`.

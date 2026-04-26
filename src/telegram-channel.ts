@@ -39,9 +39,18 @@ import { z } from "zod";
 // -----------------------------------------------------------------------------
 
 const projectRoot = resolve(import.meta.dir, "..");
-const envPath = resolve(projectRoot, ".env");
-const envFile = Bun.file(envPath);
-if (await envFile.exists()) {
+// Two sources, in priority order: the user-level keys file (where the
+// /cookiedclaw:setup wizard writes everything — survives plugin upgrades
+// and works regardless of cwd) takes precedence over the project's .env
+// (legacy / dev-mode source). Shell env still wins over both because we
+// only set keys that aren't already in process.env.
+const envPaths = [
+  resolve(process.env.HOME ?? "/", ".cookiedclaw", "keys.env"),
+  resolve(projectRoot, ".env"),
+];
+for (const envPath of envPaths) {
+  const envFile = Bun.file(envPath);
+  if (!(await envFile.exists())) continue;
   const envText = await envFile.text();
   for (const line of envText.split("\n")) {
     const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/i);
@@ -51,22 +60,24 @@ if (await envFile.exists()) {
     process.env[key] = rawValue.replace(/^['"]|['"]$/g, "");
   }
   console.error(`[telegram] loaded env from ${envPath}`);
-} else {
-  console.error(`[telegram] no .env at ${envPath} (relying on shell env)`);
 }
 
 const token =
   process.env.TELEGRAM_BOT_TOKEN ?? process.env.TELEGRAM_API_TOKEN;
-if (!token) {
+const hasToken = Boolean(token);
+if (!hasToken) {
+  // First-run case: user installed cookiedclaw but hasn't gone through
+  // setup yet. We MUST stay alive — otherwise the plugin's MCP server
+  // dies and the /cookiedclaw:setup skill (the thing that fixes this)
+  // becomes unreachable from CC. So: log a friendly note, skip bot
+  // polling, but keep the MCP server up so its tools and the setup
+  // skill stay available.
   console.error(
-    `[telegram] no Telegram bot token found (looked for TELEGRAM_BOT_TOKEN, then TELEGRAM_API_TOKEN).\n` +
-      `  Either put it in ${envPath}\n` +
-      `  or export it in your shell BEFORE launching claude:\n` +
-      `    export TELEGRAM_BOT_TOKEN=...\n` +
-      `    export TELEGRAM_ALLOWED_USERS=<your_telegram_user_id>\n` +
-      `    claude --dangerously-load-development-channels server:telegram`,
+    `[telegram] no Telegram bot token yet — bot polling disabled.\n` +
+      `  Run /cookiedclaw:setup in Claude Code to configure one,\n` +
+      `  then restart claude. MCP tools (pair, list_access, …) and the\n` +
+      `  setup skill stay available in the meantime.`,
   );
-  process.exit(1);
 }
 
 const allowedRaw = process.env.TELEGRAM_ALLOWED_USERS ?? "";
@@ -641,7 +652,12 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }));
 
-const bot = new Bot(token);
+// Construct with a placeholder when there's no token yet so the rest of
+// the file (which references `bot` from many places) doesn't crash on
+// import. We never call bot.start() in that case, so the placeholder
+// never hits Telegram. Any stray bot.api.* call would 401 — every
+// handler that touches bot.api wraps in try/catch already.
+const bot = new Bot(token ?? "0:no-token-yet");
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
@@ -1469,15 +1485,22 @@ async function publishBotMenu(): Promise<void> {
 // -----------------------------------------------------------------------------
 
 await mcp.connect(new StdioServerTransport());
-console.error("[telegram] mcp connected, starting bot polling...");
+console.error("[telegram] mcp connected");
 
-void bot.start({
-  drop_pending_updates: true,
-  onStart: (info) => {
-    console.error(
-      `[telegram] bot @${info.username} ready (allowlist size: ${allowAll ? "ALL" : allowedUsers.size})`,
-    );
-    void publishBotMenu();
-  },
-});
+if (hasToken) {
+  console.error("[telegram] starting bot polling...");
+  void bot.start({
+    drop_pending_updates: true,
+    onStart: (info) => {
+      console.error(
+        `[telegram] bot @${info.username} ready (allowlist size: ${allowAll ? "ALL" : allowedUsers.size})`,
+      );
+      void publishBotMenu();
+    },
+  });
+} else {
+  console.error(
+    "[telegram] skipping bot polling (no token). MCP tools + setup skill remain available.",
+  );
+}
 
