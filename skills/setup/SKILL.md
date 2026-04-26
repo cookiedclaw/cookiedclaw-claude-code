@@ -86,16 +86,19 @@ Otherwise:
 
 ## Step 3 — Offer optional integrations
 
-Make it crystal clear these are **optional**. Phrasing:
+Make it crystal clear these are **optional** — cookiedclaw works fine without them.
 
-> Now the optional bits. cookiedclaw works fine without these — skip any you don't need.
->
-> - **fal.ai** *(optional)* — image generation: text-to-image, image editing, lipsync, video. Has a free tier.
-> - **Supermemory** *(optional)* — persistent semantic memory across sessions. Auto-captures context. Requires a Supermemory Pro plan.
->
-> Want to set up either now? You can always come back to this with `/cookiedclaw:setup`.
+Use the `AskUserQuestion` tool with a multi-select question (the user picks zero, one, or multiple options at once):
 
-Accept "both", "fal only", "memory only", "skip", "neither", "later". Don't push.
+- **Question**: "These are optional integrations. Which would you like to set up now? (You can always come back to `/cookiedclaw:setup` later.)"
+- **Options**:
+  - `fal.ai` — image generation (text-to-image, image editing, lipsync, video). Free tier available.
+  - `Supermemory` — persistent semantic memory across sessions. Auto-captures context. Requires a Supermemory Pro plan.
+  - `Skip — I'll set these up later`
+
+If the user picks "Skip" (or skips the prompt), jump straight to Step 5 (wrap-up).
+
+Otherwise, loop through the chosen integrations in Step 4. Skip any that's already configured (per Step 1's survey) unless the user says they want to re-do it — in which case use `AskUserQuestion` again to confirm the re-do.
 
 (Tavily / web search isn't on the list because Claude has built-in `WebSearch` and `WebFetch`.)
 
@@ -108,7 +111,10 @@ Loop through whichever ones the user picked. Finish one before starting the next
 1. Tell the user: *"Open https://fal.ai/dashboard/keys, create a new key, and paste it here."*
 2. Wait for the key. Validate that it looks like a fal credential (typically `<id>:<secret>`, or starts with `fal_`). If it doesn't, ask them to double-check.
 3. Save to `~/.cookiedclaw/keys.env` as `FAL_KEY=<value>` (replace existing line if present, otherwise append). Re-`chmod 600`.
-4. Register fal.ai's hosted HTTP MCP server. **Confirm with the user before running** — this stores the bearer token in CC's MCP config:
+4. Register fal.ai's hosted HTTP MCP server. Use `AskUserQuestion` first (this stores the bearer token in CC's MCP config, so it's worth a yes/no):
+   - **Question**: "Register the fal.ai MCP server now? (Stores your token in CC's user-scope MCP config so every session can use it.)"
+   - **Options**: `Yes, register it`, `No, I'll do it manually later`
+   On yes, run:
    ```
    claude mcp add --transport http fal-ai \
      https://mcp.fal.ai/mcp \
@@ -124,12 +130,20 @@ Supermemory ships as a first-class CC plugin (not an MCP server) — auto-inject
 
 1. Tell the user: *"Open https://console.supermemory.ai/keys, create an API key (starts with `sm_`), and paste it here."*
 2. Wait for the key. Save to `~/.cookiedclaw/keys.env` as `SUPERMEMORY_CC_API_KEY=<value>` (for re-setup later).
-3. Install Supermemory's official plugin (confirm before running both):
+3. Install Supermemory's official plugin. Use `AskUserQuestion` first:
+   - **Question**: "Install the Supermemory plugin now? (Adds their marketplace, installs claude-supermemory.)"
+   - **Options**: `Yes, install`, `No, I'll do it manually later`
+   On yes, run:
    ```
    claude plugin marketplace add supermemoryai/claude-supermemory
    claude plugin install claude-supermemory
    ```
-4. The plugin reads `SUPERMEMORY_CC_API_KEY` from env when CC starts. Detect the user's shell (`echo $SHELL`) and offer to append `export SUPERMEMORY_CC_API_KEY=<value>` to the matching rc file (`~/.zshrc`, `~/.bashrc`, etc.). If they prefer to do it themselves, give them the exact line. Alternative: their plugin reads `~/.supermemory-claude/settings.json` — point at https://supermemory.ai/docs/integrations/claude-code.
+4. The plugin reads `SUPERMEMORY_CC_API_KEY` from env when CC starts. Detect the user's shell (`echo $SHELL`) and use `AskUserQuestion` to ask how to persist:
+   - **Question**: "Where should I put `SUPERMEMORY_CC_API_KEY` so it sticks across CC restarts?"
+   - **Options**:
+     - `Append to my shell rc (<detected rc path>)` — we add an `export` line for you
+     - `Show me the line, I'll do it myself` — we just print it
+     - `Use ~/.supermemory-claude/settings.json instead` — point them at https://supermemory.ai/docs/integrations/claude-code
 5. Confirm: *"Supermemory set up. Restart your shell (so env exports) before restarting Claude Code at the end."*
 
 ## Step 5 — Wrap up
