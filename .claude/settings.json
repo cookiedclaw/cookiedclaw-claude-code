@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun ${CLAUDE_PROJECT_DIR}/hooks/tool-progress.ts pre"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun ${CLAUDE_PROJECT_DIR}/hooks/tool-progress.ts post"
+          }
+        ]
+      }
+    ]
+  }
+}

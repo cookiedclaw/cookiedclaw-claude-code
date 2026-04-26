@@ -31,12 +31,16 @@ Anyone not in `TELEGRAM_ALLOWED_USERS` gets dropped silently — without that al
 From this directory:
 
 ```bash
-claude --plugin-dir . --dangerously-load-development-channels server:telegram
+claude --dangerously-load-development-channels server:telegram
 ```
 
-`--plugin-dir .` registers cookiedclaw as a local plugin (so the Pre/PostToolUse hooks under `hooks/` are wired up — without this you still get the bot but no live tool progress).
+CC reads:
 
-`--dangerously-load-development-channels server:telegram` opts the Telegram MCP server in as a channel. The flag is required because we're not on the Anthropic-curated allowlist yet.
+- `.mcp.json` → spawns the Telegram channel server (`src/telegram-channel.ts`)
+- `.claude/settings.json` → registers PreToolUse / PostToolUse hooks pointing at `hooks/tool-progress.ts`
+- `--dangerously-load-development-channels server:telegram` → opts the Telegram MCP server in as a *channel* so its push notifications reach your session (the flag is required because we're not on the Anthropic-curated allowlist yet)
+
+> **Don't** pass `--plugin-dir .` for development. It causes CC to register the same MCP server twice (once as project, once as plugin), and our channel opt-in flag only applies to one of them — you'll end up with a working tool but no inbound message routing. The `.claude-plugin/plugin.json` and `hooks/hooks.json` files are kept for the eventual marketplace publish, where the plugin-loading path takes over.
 
 DM your bot. The message arrives in your CC terminal as a `<channel source="telegram" chat_id="..." sender="...">` event. While CC runs tools you'll see a live message in Telegram update like:
 
@@ -48,9 +52,14 @@ DM your bot. The message arrives in your CC terminal as a `<channel source="tele
 
 When CC calls the `reply` tool, the progress message is deleted and replaced by the final answer.
 
+## Debugging
+
+Both the channel server and the hook script append diagnostic lines to `~/.cache/cookiedclaw/progress.log`. If something doesn't reach Telegram, that log usually shows where the chain broke (server didn't bind, hook couldn't find port, no active chat, etc.).
+
 ## What's missing (next steps)
 
 - **Pairing flow** instead of manual env-var allowlist
 - **Onboarding skill** (`/cookiedclaw:setup`) to walk through fal.ai / Supermemory / Tavily key setup and wire up the matching MCP servers
 - **Multi-bot** for family members, each with their own background sub-agent and own context
 - **Image / file dispatch** with `[embed:path]` / `[file:path]` markers, ported from the previous standalone iteration
+- **Marketplace publish** so the `--plugin-dir`-free dev path becomes a one-line `/plugin install`
