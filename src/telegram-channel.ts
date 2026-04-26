@@ -987,9 +987,73 @@ async function gateInbound(ctx: {
   return { ok: false };
 }
 
+/**
+ * Handle `/stop` (or `/cancel`) — user wants to abort whatever the agent
+ * is doing right now. Server-side we kill the typing indicator and drop
+ * the progress message immediately so the user gets visual feedback
+ * without waiting for the agent to react. Then we push a channel event
+ * with `meta.is_stop="true"` so CC's next turn sees the explicit stop
+ * signal — its instructions (in CLAUDE.md) tell it to abort and ack.
+ */
+async function handleStopCommand(
+  chatId: string,
+  senderId: string,
+  senderLabel: string,
+  messageId: number,
+): Promise<void> {
+  stopTyping(chatId);
+  await queueEdit(chatId, async () => {
+    const state = chats.get(chatId);
+    if (state?.progressMessageId !== undefined) {
+      try {
+        await bot.api.deleteMessage(Number(chatId), state.progressMessageId);
+      } catch (err) {
+        console.error(
+          `[telegram] couldn't delete progress on /stop: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      state.progressMessageId = undefined;
+    }
+  });
+  chats.set(chatId, { events: [] });
+  activeChatId = chatId;
+  dlog(`/stop: chat=${chatId} sender=${senderId} msg=${messageId}`);
+  try {
+    await mcp.server.notification({
+      method: "notifications/claude/channel",
+      params: {
+        content: "/stop",
+        meta: {
+          chat_id: chatId,
+          sender_id: senderId,
+          sender: senderLabel,
+          message_id: String(messageId),
+          is_stop: "true",
+        },
+      },
+    });
+  } catch (err) {
+    console.error(
+      `[telegram] failed to push /stop signal: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+}
+
 bot.on("message:text", async (ctx) => {
   const gated = await gateInbound(ctx);
   if (!gated.ok) return;
+  const text = ctx.message.text.trim();
+  // /stop and /cancel get a special path — we want immediate visual
+  // feedback (kill typing, drop progress) before CC's reply lands.
+  if (text === "/stop" || text === "/cancel") {
+    await handleStopCommand(
+      String(ctx.chat.id),
+      gated.senderId,
+      gated.senderLabel,
+      ctx.message.message_id,
+    );
+    return;
+  }
   await forwardToCC(
     String(ctx.chat.id),
     gated.senderId,
@@ -1503,18 +1567,36 @@ async function discoverCommands(): Promise<DiscoveredCommand[]> {
     .slice(0, TELEGRAM_MAX_BOT_COMMANDS);
 }
 
+/** Built-in bot commands cookiedclaw always exposes, regardless of what
+ * skills exist in CC. They survive the discovery cap because we prepend
+ * them and let the dynamic skill list take whatever space remains. */
+const BUILTIN_COMMANDS: DiscoveredCommand[] = [
+  {
+    command: "stop",
+    description: "Abort whatever the bot is doing right now",
+  },
+];
+
 async function publishBotMenu(): Promise<void> {
-  let cmds: DiscoveredCommand[];
+  let discovered: DiscoveredCommand[];
   try {
-    cmds = await discoverCommands();
+    discovered = await discoverCommands();
   } catch (err) {
     console.error(
       `[telegram] discovery failed: ${err instanceof Error ? err.message : err}`,
     );
-    return;
+    discovered = [];
   }
+  // Built-ins always come first; discovered skills fill the rest of the
+  // payload cap. If a discovered skill happens to share a name (unlikely),
+  // the built-in wins — `/stop` shouldn't be reassignable.
+  const builtinNames = new Set(BUILTIN_COMMANDS.map((c) => c.command));
+  const cmds = [
+    ...BUILTIN_COMMANDS,
+    ...discovered.filter((c) => !builtinNames.has(c.command)),
+  ].slice(0, TELEGRAM_MAX_BOT_COMMANDS);
   if (cmds.length === 0) {
-    console.error(`[telegram] no skills/commands discovered for bot menu`);
+    console.error(`[telegram] no commands to publish to bot menu`);
     return;
   }
 

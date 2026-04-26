@@ -33,6 +33,7 @@ If none of those files exist, the user hasn't run `/cookiedclaw:setup` yet — g
 - **Reactions**: short ack-style messages ("thanks", "got it") get a `react` instead of a generated reply.
 - **Inbound attachments**: when the channel tag has `attachment="..."`, use `Read` on that absolute path — Read handles vision for images.
 - **Slash commands** the user taps from the bot menu arrive as `/<cmd>` text. Match underscores against skill names with hyphens / colons (`/svelte_svelte_code_writer` ⇒ `svelte:svelte-code-writer`).
+- **`/stop`** (with `meta.is_stop="true"`): user wants to abort whatever you're doing right now. Stop the in-flight work — don't continue with planned tool calls, don't finish what the prior request asked for. React with 🛑 (or 👌) and `react`, OR `reply` with one short line ("Stopped." / "Окей, остановил."). End the turn. Don't apologize or explain at length.
 
 ---
 
