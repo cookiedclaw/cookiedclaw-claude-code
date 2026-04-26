@@ -64,11 +64,14 @@ Repeat this loop per integration. Stay focused, finish one before starting the n
    - `mkdir -p ~/.cookiedclaw` first.
    - If the file already has a `FAL_KEY=` line, replace it (use `Edit`); otherwise append.
    - `chmod 600 ~/.cookiedclaw/keys.env` so only the user can read it.
-4. Register an MCP server for it. **You don't have to memorize the canonical package** — use `WebSearch` for "fal.ai MCP server claude code" or check `npm` to find the current best option, then propose to the user before running. Typical shape:
+4. Register fal.ai's hosted HTTP MCP server (this is the official one — no npm package or local subprocess, fal hosts it):
    ```
-   claude mcp add fal -s user -e FAL_KEY=<value> -- npx -y <package-name>
+   claude mcp add --transport http fal-ai \
+     https://mcp.fal.ai/mcp \
+     -s user \
+     --header "Authorization: Bearer <value>"
    ```
-   `-s user` makes it available in every CC session, not just this project.
+   `-s user` makes it available in every CC session, not just this project. Confirm with the user before running, especially since this stores the bearer token in CC's MCP config.
 5. Confirm: *"fal.ai is set up. Restart Claude Code, then the Telegram bot can generate images."*
 
 ### Supermemory
