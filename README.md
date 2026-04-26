@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.jpg" alt="cookiedclaw — your personal AI agent on Telegram" />
+</p>
+
 # cookiedclaw
 
 A Claude Code plugin that brings Telegram into your CC session: text your bot from anywhere, CC does the work using your claude.ai subscription, the reply lands back in the chat.
