@@ -4,75 +4,89 @@
 
 # cookiedclaw
 
-A Claude Code plugin that brings Telegram into your CC session: text your bot from anywhere, CC does the work using your claude.ai subscription, the reply lands back in the chat.
+A Claude Code plugin that turns any Telegram chat into a frontend for your CC session. DM your bot from anywhere, the agent runs on your machine using your claude.ai subscription, the reply lands back in chat. Tool progress streams live, image and file attachments work both ways, and the agent has a persistent identity that survives between sessions.
 
-> **Status:** early POC. Right now it's just a custom channel — `--dangerously-load-development-channels` is required because we're not on the Anthropic-curated allowlist yet. Multi-bot, hooks for tool progress, onboarding wizard, and image/file dispatch are planned next.
-
-## Prerequisites
-
-- [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`)
-- [Claude Code](https://code.claude.com) v2.1.80+, logged in with a claude.ai account (Console / API key auth doesn't support channels)
-- A Telegram bot token from [@BotFather](https://t.me/BotFather)
-- Your Telegram user ID (DM [@userinfobot](https://t.me/userinfobot))
-
-## Setup
+## Quick start
 
 ```bash
+git clone git@github.com:cookiedclaw/cookiedclaw.git
+cd cookiedclaw
 bun install
-```
-
-Set the env in your shell (or a `.env` file in this directory — Bun loads it automatically):
-
-```sh
-TELEGRAM_BOT_TOKEN=123456:abc...
-TELEGRAM_ALLOWED_USERS=12345678,87654321   # your Telegram user ID(s), comma-separated
-```
-
-Anyone not in `TELEGRAM_ALLOWED_USERS` gets dropped silently — without that allowlist, your bot becomes a prompt-injection vector.
-
-## Run
-
-From this directory:
-
-```bash
 claude --dangerously-load-development-channels server:telegram
 ```
 
-CC reads:
+Inside the CC session, run `/cookiedclaw:setup`. The wizard walks you through:
 
-- `.mcp.json` → spawns the Telegram channel server (`src/telegram-channel.ts`)
-- `.claude/settings.json` → registers PreToolUse / PostToolUse hooks pointing at `hooks/tool-progress.ts`
-- `--dangerously-load-development-channels server:telegram` → opts the Telegram MCP server in as a *channel* so its push notifications reach your session (the flag is required because we're not on the Anthropic-curated allowlist yet)
+- Creating a Telegram bot via [@BotFather](https://t.me/BotFather), saving the token to `~/.cookiedclaw/keys.env`
+- Optional integrations (fal.ai for image generation, Supermemory for cross-session memory)
+- A first-contact identity discovery (you tell the agent who you are and what to call it; it writes IDENTITY/USER/SOUL.md to `~/.cookiedclaw/`)
 
-> **Don't** pass `--plugin-dir .` for development. It causes CC to register the same MCP server twice (once as project, once as plugin), and our channel opt-in flag only applies to one of them — you'll end up with a working tool but no inbound message routing. The `.claude-plugin/plugin.json` and `hooks/hooks.json` files are kept for the eventual marketplace publish, where the plugin-loading path takes over.
+After setup, restart CC. DM the bot — the first time anyone reaches out unrecognised, they get a 5-letter pair code. Tell the agent `pair <code>` to add them to the allowlist.
 
-DM your bot. The message arrives in your CC terminal as a `<channel source="telegram" chat_id="..." sender="...">` event. While CC runs tools you'll see a live message in Telegram update like:
+> The `--dangerously-load-development-channels server:telegram` flag is required because cookiedclaw isn't on Anthropic's curated channel allowlist yet. It will go away once the plugin lands on the marketplace.
+
+## What it does
+
+- **Telegram ⇄ Claude Code bridge** via a custom MCP channel server. Inbound DMs become `<channel source="telegram" sender="...">` events; the agent replies through a `reply` tool that also accepts `[embed:path]` / `[file:path]` markers for attachments.
+- **Live tool progress** in the chat — a single message edits in place (`⏳ Bash: ls -la` → `✓ Bash: ls -la (45ms)`) via Pre/PostToolUse hooks → localhost endpoint → editMessage. Broadcasts to every chat that's mid-turn, so multi-user conversations don't lose progress.
+- **MarkdownV2 rendering** for replies (CommonMark in, properly-escaped Telegram out via `telegramify-markdown`).
+- **Permission relay with inline buttons.** Tool-approval prompts (Bash, Write, Edit) come through Telegram with `[✓ Allow]` / `[✗ Deny]`; the local terminal dialog stays open in parallel — first answer wins.
+- **Pairing flow** with persistent allowlist (`~/.cookiedclaw/access.json`). Plus `pair`, `revoke_access`, `list_access` MCP tools for the owner. `TELEGRAM_ALLOWED_USERS` env still works as a static bypass.
+- **Image / file dispatch, both directions.** Outbound via `[embed:path]` (auto-detect → photo, single-embed-with-caption fast path) and `[file:path]` (always document); inbound photos and documents download to `~/.cache/cookiedclaw/inbox/` and surface the path to the agent so it can `Read` them (vision-aware for images).
+- **Reactions** via the `react` tool — short ack-style messages get an emoji instead of a generated reply.
+- **`/stop`** as a built-in slash command — kills typing, drops the progress message immediately, and signals the agent to abort whatever it's doing.
+- **Bot menu** auto-populated from CC's discovered skills (user-level + project-level + every enabled plugin via `claude plugin list --json`); names normalized to Telegram's `[a-z0-9_]{1,32}`, payload-cap backoff for the undocumented `BOT_COMMANDS_TOO_MUCH` ceiling.
+- **Sender attribution** on every inbound — `[Tymur Turatbekov (@wowtist247)]: hi` — so the agent reliably knows who's talking in multi-user chats.
+- **Persistent identity** via OpenClaw's 4-file convention in `~/.cookiedclaw/`: `BOOTSTRAP.md` (one-shot first-contact script), `IDENTITY.md` (who the agent is), `USER.md` (who you are), `SOUL.md` (the agent's continuity-of-self essay, per [soul.md](https://soul.md/)).
+
+## How it works
 
 ```
-⏳ Bash: ls -la
-✓ Read: /tmp/notes.md (45ms)
-⏳ WebFetch: https://...
+Telegram ─DM─►  src/telegram-channel.ts  ─MCP notifications/claude/channel─►  Claude Code
+                (bun process, MCP server)                                          │
+                       ▲                                                           │
+                       │ ◄─ reply / react / pair / revoke_access / list_access  ◄──┘
+                       │
+                  Pre/PostToolUse hooks (hooks/tool-progress.ts)
+                       │  POST localhost:port
+                       ▼
+                  edit live progress message in chat
 ```
 
-When CC calls the `reply` tool, the progress message is deleted and replaced by the final answer.
+Repo layout:
 
-## Debugging
+- `src/telegram-channel.ts` — wiring entry point. Imports the rest as modules / side effects.
+- `src/{paths,env,bot,format,chat-state,access,attachments,progress,mcp,tools,inbound,permission-relay,progress-server,skill-discovery}.ts` — one concern per file (~30–260 lines each).
+- `hooks/tool-progress.ts` — the Pre/PostToolUse hook that POSTs to the channel server's localhost endpoint.
+- `skills/setup/SKILL.md` — the `/cookiedclaw:setup` wizard.
+- `.claude-plugin/plugin.json` + `hooks/hooks.json` — kept for the eventual marketplace publish.
+- `.mcp.json` + `.claude/settings.json` — what CC actually reads in development mode.
+- `CLAUDE.md` — auto-loaded by CC at startup; tells the agent to read the `~/.cookiedclaw/` workspace files.
 
-Both the channel server and the hook script append diagnostic lines to `~/.cache/cookiedclaw/progress.log`. If something doesn't reach Telegram, that log usually shows where the chain broke (server didn't bind, hook couldn't find port, no active chat, etc.).
+## Configuration
 
-## What works today
+`~/.cookiedclaw/` is the per-user workspace. The setup wizard creates and maintains it; you rarely edit by hand.
 
-- Telegram channel server (MCP + `claude/channel`) — DMs become `<channel>` events in CC
-- Reply tool with **MarkdownV2** rendering (CommonMark in, properly-escaped Telegram out via `telegramify-markdown`)
-- **Live tool progress** in the chat: a single message edits in place ("⏳ Bash: ls -la" → "✓ Bash: ls -la (45ms)") via Pre/PostToolUse hooks → localhost endpoint → editMessage
-- **Pairing flow** with persistent allowlist (`~/.cache/cookiedclaw/access.json`). Unknown DM gets a 5-letter code; owner approves via the `pair` MCP tool. Plus `revoke_access` and `list_access`. `TELEGRAM_ALLOWED_USERS` env still works as a static bypass.
-- **Permission relay** with inline buttons. CC's tool-approval prompts (Bash, Write, Edit) come to Telegram with `[✓ Allow]` / `[✗ Deny]`; tapping sends the verdict back. Local terminal dialog stays open in parallel — first answer wins.
-- **Typing indicator** while CC works
-- **Image / file dispatch** both directions: outbound via `[embed:path]` / `[file:path]` markers (auto-detect → photo or document, single-embed-with-caption fast path); inbound via `message:photo` / `message:document` handlers that download to inbox dir and surface the path via `meta.attachment` so CC can `Read` it (vision-aware for images)
-- **Bot menu** auto-populated from CC's discovered skills (user-level + project-level + every enabled plugin via `claude plugin list --json`); names normalized to Telegram's `[a-z0-9_]{1,32}` constraint, payload-cap backoff so we don't trip the undocumented `BOT_COMMANDS_TOO_MUCH`
+| Path | What it is |
+|------|------------|
+| `keys.env` | `TELEGRAM_BOT_TOKEN`, optional `FAL_KEY`, `SUPERMEMORY_CC_API_KEY`. `chmod 600`. Read by the channel server at startup. |
+| `access.json` | Paired Telegram users. Edit only via `pair` / `revoke_access` / `list_access` MCP tools. |
+| `IDENTITY.md` | The agent's name, nature, vibe — written by the agent during first-contact. |
+| `USER.md` | Your name, timezone, language, tone preferences. |
+| `SOUL.md` | The agent's values and boundaries, narrative essay. The continuity-of-self file. |
 
-## What's missing (next steps)
+Diagnostics live in `~/.cache/cookiedclaw/progress.log` — channel server and hook script both write here. If something doesn't reach Telegram, that log usually shows where the chain broke.
 
-- **Onboarding skill** (`/cookiedclaw:setup`) to walk through fal.ai / Supermemory key setup and wire up the matching MCP servers — the central piece of the consumer pivot
-- **Multi-bot** for family members, each with their own background sub-agent and own context (deferred — single-user MVP works first)
-- **Marketplace publish** so the `--plugin-dir`-free dev path becomes a one-line `/plugin install`
+## Why `--dangerously-load-development-channels` and not `--plugin-dir .`?
+
+If you load this repo as both a project (via `.mcp.json`) and a plugin (via `--plugin-dir .`), CC registers the same MCP server twice. The `--dangerously-load-development-channels` flag opts in *one* of them as a channel — the other becomes a plain MCP server with no inbound message routing. Use the project path for development; the plugin path is for the eventual marketplace install.
+
+## Roadmap
+
+- **Marketplace publish** so the dev flag goes away and install becomes one line of `/plugin install`
+- **Multi-bot** — one cookiedclaw, multiple Telegram bots routed through the same CC session, each with isolated context (so a family / team can each have their own bot personality)
+- **More integrations** in the setup wizard — Notion, GitHub, calendar — based on what people actually want
+
+## License
+
+MIT
