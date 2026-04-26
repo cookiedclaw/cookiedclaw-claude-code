@@ -29,7 +29,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { Bot, InlineKeyboard } from "grammy";
+import { Bot, InlineKeyboard, InputFile } from "grammy";
 import telegramifyMarkdown from "telegramify-markdown";
 import { z } from "zod";
 
@@ -289,6 +289,153 @@ function formatDuration(ms: number): string {
   return `${Math.floor(ms / 60_000)}m${Math.floor((ms % 60_000) / 1000)}s`;
 }
 
+// -----------------------------------------------------------------------------
+// Outbound attachments — [embed:path] / [file:path] markers in reply text
+// -----------------------------------------------------------------------------
+
+type Embed = { kind: "auto" | "file"; source: string };
+
+const EMBED_REGEX = /\[(embed|file):([^\]\n]+)\]/g;
+
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|heic|heif|bmp|tiff?)(\?|$)/i;
+
+function looksLikeImage(source: string, mediaType?: string): boolean {
+  if (mediaType?.startsWith("image/")) return true;
+  return IMAGE_EXT_RE.test(source);
+}
+
+function extractEmbeds(text: string): { embeds: Embed[]; cleaned: string } {
+  const embeds: Embed[] = [];
+  for (const match of text.matchAll(EMBED_REGEX)) {
+    const kind = match[1] === "file" ? "file" : "auto";
+    const source = match[2]?.trim();
+    if (source) embeds.push({ kind, source });
+  }
+  // Strip markers and tidy whitespace so we don't leave double-newlines or
+  // trailing spaces where a marker used to live.
+  const cleaned = text
+    .replace(EMBED_REGEX, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/^\s+|\s+$/g, "");
+  return { embeds, cleaned };
+}
+
+/**
+ * Resolve an embed source to a Telegram-uploadable payload. We download
+ * URLs ourselves rather than handing them to Telegram, because Telegram's
+ * URL fetcher is fragile against signed/CDN URLs (fal.ai, S3 presigned,
+ * etc.) and times out on large hosts. Local paths get streamed via
+ * InputFile.
+ */
+async function resolveEmbed(
+  source: string,
+): Promise<{ file: InputFile; isImage: boolean; sizeBytes?: number }> {
+  if (/^https?:\/\//i.test(source)) {
+    const res = await fetch(source);
+    if (!res.ok) {
+      throw new Error(`fetch ${source}: HTTP ${res.status}`);
+    }
+    const mediaType = res.headers.get("content-type") ?? undefined;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    const filename =
+      source.split(/[?#]/)[0]?.split("/").pop() || "download";
+    return {
+      file: new InputFile(bytes, filename),
+      isImage: looksLikeImage(source, mediaType),
+      sizeBytes: bytes.byteLength,
+    };
+  }
+  // Local path — leave it absolute or resolve relative to project root.
+  const abs = source.startsWith("/")
+    ? source
+    : resolve(projectRoot, source);
+  const file = Bun.file(abs);
+  if (!(await file.exists())) {
+    throw new Error(`file not found: ${abs}`);
+  }
+  return {
+    file: new InputFile(abs),
+    isImage: looksLikeImage(abs, file.type || undefined),
+    sizeBytes: file.size,
+  };
+}
+
+/** Telegram caption max length (per Bot API). */
+const TELEGRAM_CAPTION_LIMIT = 1024;
+
+/**
+ * Send the reply text + any extracted attachments. UX strategy:
+ *  - One attachment + short text → single sendPhoto/Document with caption
+ *    (text appears under the media, no two-message split).
+ *  - Anything else → text first, then attachments in order.
+ *
+ * Failures dispatching individual attachments are logged but never abort
+ * the whole reply — the user always at least sees the text answer.
+ */
+async function sendReply(
+  chatId: number,
+  text: string,
+  embeds: Embed[],
+): Promise<void> {
+  // Fast path: single embed + caption-able text → combined.
+  if (embeds.length === 1 && text.length <= TELEGRAM_CAPTION_LIMIT) {
+    const embed = embeds[0]!;
+    try {
+      const { file, isImage } = await resolveEmbed(embed.source);
+      const sendAsPhoto = embed.kind === "auto" && isImage;
+      const caption = text ? toTelegramMd(text) : undefined;
+      const opts =
+        caption !== undefined
+          ? { caption, parse_mode: "MarkdownV2" as const }
+          : undefined;
+      if (sendAsPhoto) {
+        await bot.api.sendPhoto(chatId, file, opts);
+      } else {
+        await bot.api.sendDocument(chatId, file, opts);
+      }
+      return;
+    } catch (err) {
+      console.error(
+        `[telegram] combined send failed (${embed.source}): ${err instanceof Error ? err.message : err} — falling back to split`,
+      );
+      // fall through to split path
+    }
+  }
+
+  if (text) await sendFormatted(chatId, text);
+
+  for (const embed of embeds) {
+    try {
+      const { file, isImage } = await resolveEmbed(embed.source);
+      if (embed.kind === "auto" && isImage) {
+        await bot.api.sendPhoto(chatId, file);
+      } else {
+        await bot.api.sendDocument(chatId, file);
+      }
+    } catch (err) {
+      console.error(
+        `[telegram] embed dispatch failed (${embed.source}): ${err instanceof Error ? err.message : err}`,
+      );
+      // Tell the user something went wrong with this specific attachment
+      // so they aren't left wondering where the file is.
+      try {
+        await bot.api.sendMessage(
+          chatId,
+          `(couldn't attach \`${embed.source}\`: ${err instanceof Error ? err.message : err})`,
+          { parse_mode: "Markdown" },
+        );
+      } catch {
+        // best-effort
+      }
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Telegram MarkdownV2 helpers (used above + below)
+// -----------------------------------------------------------------------------
+
 /**
  * Convert CC's CommonMark-flavored output into something Telegram's
  * MarkdownV2 parser will accept. CC writes \`code\`, **bold**, lists,
@@ -397,10 +544,19 @@ const mcp = new Server(
       tools: {},
     },
     instructions:
-      'Telegram messages arrive as <channel source="telegram" chat_id="..." sender="...">. ' +
+      'Telegram messages arrive as <channel source="telegram" chat_id="..." sender="..." [attachment="/abs/path"]>. ' +
       "To reply, call the `reply` tool with the chat_id from the tag and your message text. " +
       "The chat is private DM with one user — no need for /commands or @mentions in your reply. " +
-      "Be conversational, concise, and ground claims in tool results when appropriate.",
+      "Be conversational, concise, and ground claims in tool results when appropriate.\n\n" +
+      "Inbound attachments: if the channel tag has an `attachment` attribute, the user attached a file at that absolute path. " +
+      "For images/photos, use the Read tool — it handles vision so you can actually see the image. " +
+      "For other files (PDFs, docs, audio, etc.), use Read or Bash as appropriate. " +
+      "The attachment is local to this machine; treat the path as authoritative.\n\n" +
+      "Sending images / files: include `[embed:<absolute-path>]` or `[file:<absolute-path>]` markers in your reply text. " +
+      "`embed` auto-detects: image MIMEs go as compressed Telegram photos (rendered inline), everything else as documents. " +
+      "`file` always sends as a document (no compression — use for original-quality images or when the user asked 'as a file'). " +
+      "URLs work too (`[embed:https://...]`); we download and forward. " +
+      "Markers are stripped from the visible text before sending; users see clean text + the attachment.",
   },
 );
 
@@ -420,7 +576,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: {
             type: "string",
             description:
-              "Reply body. Write standard CommonMark Markdown freely — bold (**…**), italic (*…*), inline `code`, ```code blocks```, [links](url), bullet lists, etc. The channel converts to Telegram MarkdownV2 and handles escaping. Tables aren't rendered by Telegram; use bullet lists instead.",
+              "Reply body. Write standard CommonMark Markdown freely — bold (**…**), italic (*…*), inline `code`, ```code blocks```, [links](url), bullet lists, etc. The channel converts to Telegram MarkdownV2 and handles escaping. Tables aren't rendered by Telegram; use bullet lists instead.\n\n" +
+              "To attach files inline, include `[embed:<path-or-url>]` (auto: photo for images, document for other files) or `[file:<path-or-url>]` (always document, no compression). The markers are extracted from the visible text before sending. Examples: 'Here's the chart: [embed:./chart.png]' or 'Original: [file:/tmp/photo.png]'.",
           },
         },
         required: ["chat_id", "text"],
@@ -494,10 +651,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
     });
     try {
-      await sendFormatted(Number(chat_id), text);
+      const { embeds, cleaned } = extractEmbeds(text);
+      await sendReply(Number(chat_id), cleaned, embeds);
       // Reset the event list so the next turn starts clean.
       chats.set(chat_id, { events: [] });
-      return { content: [{ type: "text", text: "sent" }] };
+      const note =
+        embeds.length > 0
+          ? `sent (text + ${embeds.length} attachment${embeds.length === 1 ? "" : "s"})`
+          : "sent";
+      return { content: [{ type: "text", text: note }] };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[telegram] reply failed (chat ${chat_id}): ${msg}`);
@@ -616,67 +778,175 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 // Telegram inbound → CC channel notification
 // -----------------------------------------------------------------------------
 
-bot.on("message:text", async (ctx) => {
-  const sender = ctx.from;
-  const chat = ctx.chat;
-  const text = ctx.message.text;
-  if (!sender) return;
-
-  const senderId = String(sender.id);
-  const senderLabel = senderDisplayName(sender);
-
-  if (!isAllowed(sender.id)) {
-    // Issue or refresh a pairing code for this sender.
-    reapPending();
-    let pair = [...pendingPairs.values()].find(
-      (p) => p.userId === sender.id,
-    );
-    if (!pair || pair.expiresAt <= Date.now()) {
-      pair = {
-        code: generatePairCode(),
-        userId: sender.id,
-        name: senderLabel,
-        expiresAt: Date.now() + PAIR_TTL_MS,
-      };
-      pendingPairs.set(pair.code, pair);
-    }
-    try {
-      await sendFormatted(
-        chat.id,
-        `Hi! Your access isn't approved yet.\n\n` +
-          `Ask the bot owner to run this in their Claude Code session:\n` +
-          `\`pair ${pair.code}\`\n\n` +
-          `(code expires in 10 min)`,
-      );
-    } catch (err) {
-      console.error(
-        `[telegram] couldn't send pair instructions to ${senderId}: ${err instanceof Error ? err.message : err}`,
-      );
-    }
-    dlog(`pair issued: code=${pair.code} sender=${senderId}`);
-    return;
+/**
+ * Pull a Telegram-hosted file down to ~/.cache/cookiedclaw/inbox/. CC's
+ * Read tool then has a normal local path it can vision-process (for
+ * images) or read text from (for everything else). Filenames are prefixed
+ * with the message_id so a chatty user sending many files doesn't collide.
+ */
+async function downloadTelegramFile(
+  fileId: string,
+  filename: string,
+): Promise<string> {
+  const file = await bot.api.getFile(fileId);
+  if (!file.file_path) {
+    throw new Error("getFile returned no file_path");
   }
+  const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`download ${url}: HTTP ${res.status}`);
+  }
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  // Sanitize filename — Telegram lets users name files arbitrarily and we
+  // don't want to be on the wrong side of any path-traversal cleverness.
+  const safe = filename.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80);
+  const target = resolve(inboxDir, `${Date.now()}_${safe}`);
+  await Bun.write(target, bytes);
+  return target;
+}
 
-  const chatId = String(chat.id);
-  // New turn: the current chat is whatever just spoke; reset progress + start typing.
+/**
+ * Shared post-allowlist forwarding: set active chat, push a channel
+ * notification to CC. Text-only and attachment cases differ only in
+ * whether `attachmentPath` is set.
+ */
+async function forwardToCC(
+  chatId: string,
+  senderId: string,
+  senderLabel: string,
+  content: string,
+  attachmentPath?: string,
+): Promise<void> {
   activeChatId = chatId;
   chats.set(chatId, { events: [] });
   startTyping(chatId);
-  dlog(`inbound: chat=${chatId} sender=${senderId}`);
-
+  dlog(
+    `inbound: chat=${chatId} sender=${senderId}${attachmentPath ? ` attachment=${attachmentPath}` : ""}`,
+  );
+  const meta: Record<string, string> = {
+    chat_id: chatId,
+    sender_id: senderId,
+    sender: senderLabel,
+  };
+  if (attachmentPath) meta.attachment = attachmentPath;
   try {
     await mcp.notification({
       method: "notifications/claude/channel",
-      params: {
-        content: text,
-        meta: { chat_id: chatId, sender_id: senderId, sender: senderLabel },
-      },
+      params: { content, meta },
     });
   } catch (err) {
     console.error(
       `[telegram] failed to push notification: ${err instanceof Error ? err.message : err}`,
     );
   }
+}
+
+/**
+ * First gate any inbound message goes through. If sender isn't on the
+ * allowlist, issue/refresh a pair code and stop. Returns `true` when the
+ * caller should proceed with normal forwarding.
+ */
+async function gateInbound(ctx: {
+  from?: { id: number; username?: string; first_name?: string; last_name?: string };
+  chat: { id: number };
+}): Promise<{ ok: true; senderId: string; senderLabel: string } | { ok: false }> {
+  const sender = ctx.from;
+  if (!sender) return { ok: false };
+  const senderId = String(sender.id);
+  const senderLabel = senderDisplayName(sender);
+  if (isAllowed(sender.id)) return { ok: true, senderId, senderLabel };
+
+  reapPending();
+  let pair = [...pendingPairs.values()].find((p) => p.userId === sender.id);
+  if (!pair || pair.expiresAt <= Date.now()) {
+    pair = {
+      code: generatePairCode(),
+      userId: sender.id,
+      name: senderLabel,
+      expiresAt: Date.now() + PAIR_TTL_MS,
+    };
+    pendingPairs.set(pair.code, pair);
+  }
+  try {
+    await sendFormatted(
+      ctx.chat.id,
+      `Hi! Your access isn't approved yet.\n\n` +
+        `Ask the bot owner to run this in their Claude Code session:\n` +
+        `\`pair ${pair.code}\`\n\n` +
+        `(code expires in 10 min)`,
+    );
+  } catch (err) {
+    console.error(
+      `[telegram] couldn't send pair instructions to ${senderId}: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+  dlog(`pair issued: code=${pair.code} sender=${senderId}`);
+  return { ok: false };
+}
+
+bot.on("message:text", async (ctx) => {
+  const gated = await gateInbound(ctx);
+  if (!gated.ok) return;
+  await forwardToCC(
+    String(ctx.chat.id),
+    gated.senderId,
+    gated.senderLabel,
+    ctx.message.text,
+  );
+});
+
+bot.on("message:photo", async (ctx) => {
+  const gated = await gateInbound(ctx);
+  if (!gated.ok) return;
+  // Telegram returns thumbnail variants in ascending size order; pick the
+  // last one (largest available — usually still under a few MB so fits
+  // comfortably in CC's vision context).
+  const sizes = ctx.message.photo;
+  const largest = sizes[sizes.length - 1];
+  if (!largest) return;
+  let attachmentPath: string | undefined;
+  try {
+    attachmentPath = await downloadTelegramFile(
+      largest.file_id,
+      `photo_${ctx.message.message_id}.jpg`,
+    );
+  } catch (err) {
+    console.error(
+      `[telegram] photo download failed: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+  await forwardToCC(
+    String(ctx.chat.id),
+    gated.senderId,
+    gated.senderLabel,
+    ctx.message.caption ?? "",
+    attachmentPath,
+  );
+});
+
+bot.on("message:document", async (ctx) => {
+  const gated = await gateInbound(ctx);
+  if (!gated.ok) return;
+  const doc = ctx.message.document;
+  let attachmentPath: string | undefined;
+  try {
+    attachmentPath = await downloadTelegramFile(
+      doc.file_id,
+      doc.file_name ?? `file_${ctx.message.message_id}`,
+    );
+  } catch (err) {
+    console.error(
+      `[telegram] document download failed: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+  await forwardToCC(
+    String(ctx.chat.id),
+    gated.senderId,
+    gated.senderLabel,
+    ctx.message.caption ?? "",
+    attachmentPath,
+  );
 });
 
 // -----------------------------------------------------------------------------
@@ -865,6 +1135,9 @@ const portFile = resolve(dataDir, "progress.port");
 const debugLog = resolve(dataDir, "progress.log");
 accessFile = resolve(dataDir, "access.json");
 await loadAccess();
+
+const inboxDir = resolve(dataDir, "inbox");
+mkdirSync(inboxDir, { recursive: true });
 
 function dlog(line: string): void {
   // Append-only diagnostic log shared with the hook script. Lets us see
