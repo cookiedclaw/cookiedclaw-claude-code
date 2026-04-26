@@ -231,11 +231,27 @@ function stopTyping(chatId: string): void {
 const chats = new Map<string, ChatState>();
 
 /**
- * Hooks don't know which Telegram chat triggered the current CC turn — they
- * only see `tool_name` / `tool_input`. We track "the chat CC is currently
- * working on" by remembering the last inbound message's chat_id and resetting
- * on each new inbound. Single-chat scenario is solid; multi-chat under one
- * session can race, but for one user this is fine.
+ * The set of chats currently waiting for a reply — i.e., everyone who has
+ * sent a message that CC hasn't `reply`'d / `react`'d to yet. Hook events
+ * fire without chat context (CC's tool calls don't carry "this is for
+ * chat X"), so we BROADCAST tool progress to every chat in this set.
+ *
+ * That means: if Alice and Bob both have pending messages and CC is
+ * mid-tool-call, BOTH see the same `⏳ Bash: …` line. Slightly redundant
+ * for the user whose turn isn't being processed yet, but better than
+ * Bob silently waiting while Alice's progress fills up — at least Bob
+ * sees "the bot is doing something, my turn is queued."
+ *
+ * A chat leaves the set when CC calls `reply` or `react` for it. After
+ * that, only the still-pending chats receive subsequent progress.
+ */
+const pendingChats = new Set<string>();
+
+/**
+ * Last-inbound chat id, used ONLY for routing permission relay prompts
+ * (we have to send the Allow/Deny buttons SOMEWHERE, and the most
+ * recently inbound chat is the closest proxy for "whose turn CC is
+ * processing"). Progress / typing use the broader pendingChats set.
  */
 let activeChatId: string | undefined;
 
@@ -662,6 +678,9 @@ mcp.registerTool(
     try {
       const { embeds, cleaned } = extractEmbeds(text);
       await sendReply(Number(chat_id), cleaned, embeds);
+      // Turn done for this chat — drop from pending so further hook
+      // events stop fanning out to it. Reset events for next round.
+      pendingChats.delete(chat_id);
       chats.set(chat_id, { events: [] });
       const note =
         embeds.length > 0
@@ -728,6 +747,8 @@ mcp.registerTool(
           typeof bot.api.setMessageReaction
         >[2][number],
       ]);
+      // Turn done for this chat — same cleanup as reply.
+      pendingChats.delete(chat_id);
       chats.set(chat_id, { events: [] });
       return { content: [{ type: "text", text: `reacted with ${emoji}` }] };
     } catch (err) {
@@ -929,6 +950,9 @@ async function forwardToCC(
   attachmentPath?: string,
 ): Promise<void> {
   activeChatId = chatId;
+  pendingChats.add(chatId);
+  // Reset this chat's tool log — it's the start of their turn. Other
+  // pending chats keep whatever they had.
   chats.set(chatId, { events: [] });
   startTyping(chatId);
   dlog(
@@ -1035,6 +1059,10 @@ async function handleStopCommand(
   });
   chats.set(chatId, { events: [] });
   activeChatId = chatId;
+  // /stop ends this chat's turn from the user side — agent will ack
+  // shortly and we'll remove from pending then. Until then they're
+  // still pending so any final-tool progress goes to them.
+  pendingChats.add(chatId);
   dlog(`/stop: chat=${chatId} sender=${senderId} msg=${messageId}`);
   try {
     await mcp.server.notification({
@@ -1267,47 +1295,56 @@ type ProgressPayload = {
 
 async function handleProgress(p: ProgressPayload): Promise<void> {
   dlog(
-    `progress in: phase=${p.phase} tool=${p.tool_name} id=${p.tool_use_id} activeChat=${activeChatId ?? "none"}`,
+    `progress in: phase=${p.phase} tool=${p.tool_name} id=${p.tool_use_id} pending=[${[...pendingChats].join(",") || "none"}]`,
   );
   if (isReplyTool(p.tool_name)) {
     dlog(`  -> skipped (reply tool)`);
     return;
   }
-  if (!activeChatId) {
-    dlog(`  -> skipped (no active chat)`);
+  if (pendingChats.size === 0) {
+    dlog(`  -> skipped (no pending chats)`);
     return;
   }
-  const chatId = activeChatId;
-  const state = chats.get(chatId) ?? { events: [] };
-  chats.set(chatId, state);
 
-  if (p.phase === "pre") {
-    state.events.push({
-      toolUseId: p.tool_use_id,
-      toolName: p.tool_name,
-      inputSummary: summarizeToolInput(p.tool_name, p.tool_input),
-      status: "running",
-    });
-  } else {
-    const ev = state.events.find((e) => e.toolUseId === p.tool_use_id);
-    if (ev) {
-      ev.status = p.is_error ? "error" : "done";
-      ev.durationMs = p.duration_ms;
-      if (p.error_text) ev.errorText = p.error_text;
-    } else {
-      // post without a matching pre — shouldn't happen, but be defensive
+  // Broadcast: every pending chat gets the same event in their own
+  // events list. Tool calls don't carry chat correlation, so we can't
+  // route to "the right one" — instead everyone waiting sees the bot
+  // is working. When a chat gets its reply/react, it leaves pending
+  // and stops accumulating further events.
+  for (const chatId of pendingChats) {
+    const state = chats.get(chatId) ?? { events: [] };
+    chats.set(chatId, state);
+
+    if (p.phase === "pre") {
       state.events.push({
         toolUseId: p.tool_use_id,
         toolName: p.tool_name,
         inputSummary: summarizeToolInput(p.tool_name, p.tool_input),
-        status: p.is_error ? "error" : "done",
-        durationMs: p.duration_ms,
-        errorText: p.error_text,
+        status: "running",
       });
+    } else {
+      const ev = state.events.find((e) => e.toolUseId === p.tool_use_id);
+      if (ev) {
+        ev.status = p.is_error ? "error" : "done";
+        ev.durationMs = p.duration_ms;
+        if (p.error_text) ev.errorText = p.error_text;
+      } else {
+        // post without a matching pre — chat may have joined pending
+        // mid-flight (added after the pre fired). Capture as a
+        // standalone done/error entry so the user still sees the work.
+        state.events.push({
+          toolUseId: p.tool_use_id,
+          toolName: p.tool_name,
+          inputSummary: summarizeToolInput(p.tool_name, p.tool_input),
+          status: p.is_error ? "error" : "done",
+          durationMs: p.duration_ms,
+          errorText: p.error_text,
+        });
+      }
     }
-  }
 
-  await queueEdit(chatId, () => pushProgress(chatId));
+    void queueEdit(chatId, () => pushProgress(chatId));
+  }
 }
 
 // IPC dir: hook + server have to agree. We deliberately DON'T use
