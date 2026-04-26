@@ -23,8 +23,9 @@ import {
 } from "./chat-state.ts";
 import { sendFormatted, senderDisplayName } from "./format.ts";
 import { mcp } from "./mcp.ts";
-import { dlog } from "./paths.ts";
+import { dlog, stopFlag } from "./paths.ts";
 import { deleteProgressMessage } from "./progress.ts";
+import { unlink } from "node:fs/promises";
 
 /**
  * Forward an inbound user message into CC's session as a `<channel>`
@@ -58,6 +59,9 @@ async function forwardToCC(
     state = { events: [] };
     chats.set(chatId, state);
   }
+  // New user message = clear any /stop flag from a prior turn so the
+  // PreToolUse hook stops blocking non-reply tools.
+  unlink(stopFlag).catch(() => {});
   startTyping(chatId);
   dlog(
     `inbound: chat=${chatId} sender=${senderId} msg=${messageId}${attachmentPath ? ` attachment=${attachmentPath}` : ""}`,
@@ -166,6 +170,11 @@ async function handleStopCommand(
     state = { events: [] };
     chats.set(chatId, state);
   }
+  // Set the /stop flag so the PreToolUse hook starts blocking non-reply
+  // tools immediately. The hook reading this is what gives us a real
+  // mid-turn abort — CC's notification queue otherwise lets the agent
+  // finish the current tool sequence before noticing the stop.
+  await Bun.write(stopFlag, String(Date.now())).catch(() => {});
   setActiveChatId(chatId);
   // /stop ends this chat's turn from the user side — agent will ack
   // shortly and we'll remove from pending then. Until then they're

@@ -20,6 +20,13 @@ import { resolve } from "node:path";
 const dataDir = resolve(process.cwd(), ".cookiedclaw", "cache");
 const portFile = resolve(dataDir, "progress.port");
 const debugLog = resolve(dataDir, "progress.log");
+const stopFlagPath = resolve(dataDir, "stop.flag");
+
+/** Tool names CC must still be able to call after /stop — otherwise the
+ * agent can't acknowledge the abort. */
+function isReplyOrReact(name: string): boolean {
+  return /^(reply|react)$|^mcp__.+__(reply|react)$/.test(name);
+}
 
 function dlog(line: string): void {
   try {
@@ -62,6 +69,27 @@ try {
 if (!event.tool_name || !event.tool_use_id) {
   dlog(`missing tool_name or tool_use_id: ${JSON.stringify(event).slice(0, 200)}`);
   process.exit(0);
+}
+
+// /stop abort: if the channel server has set stop.flag recently, block
+// every non-reply/react tool call so the agent physically can't keep
+// working. Reply/react still go through so it can acknowledge the stop.
+// Flag is cleared by forwardToCC on the next user inbound, or expires
+// after 5 minutes as a defense against orphaned flags.
+if (phase === "pre" && !isReplyOrReact(event.tool_name)) {
+  try {
+    const flagText = (await Bun.file(stopFlagPath).text()).trim();
+    const ts = Number(flagText);
+    if (Number.isFinite(ts) && Date.now() - ts < 5 * 60 * 1000) {
+      dlog(`/stop active — blocking ${event.tool_name}`);
+      console.error(
+        "User pressed /stop — abort the current task. Acknowledge with the `reply` or `react` tool, then end your turn. Do not run any further tools.",
+      );
+      process.exit(2);
+    }
+  } catch {
+    // No flag, proceed normally
+  }
 }
 
 let port: number | undefined;

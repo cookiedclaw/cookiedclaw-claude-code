@@ -34,6 +34,14 @@ export const inboxDir = resolve(dotCookiedclaw, "inbox");
 export const portFile = resolve(cacheDir, "progress.port");
 
 /**
+ * `/stop` flag. The channel server writes a Date.now() string when a
+ * user presses /stop; the PreToolUse hook reads it and blocks
+ * non-reply/react tools so CC physically can't keep working. Cleared
+ * by the next user inbound (forwardToCC).
+ */
+export const stopFlag = resolve(cacheDir, "stop.flag");
+
+/**
  * Append-only diagnostic log shared between the channel server and the
  * Pre/PostToolUse hook script. Lets us debug "why didn't the typing
  * indicator update" without flipping CC's debug-log toggle.

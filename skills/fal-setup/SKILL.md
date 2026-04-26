@@ -1,7 +1,6 @@
 ---
 name: fal-setup
-description: Wires up fal.ai for image / video generation in cookiedclaw. Saves FAL_KEY to ./.cookiedclaw/keys.env and registers fal's hosted HTTP MCP server in Claude Code's user-scope config. Run from a cookiedclaw workspace.
-disable-model-invocation: true
+description: Wires up fal.ai for image / video generation in cookiedclaw. Saves FAL_KEY to ./.cookiedclaw/keys.env and registers fal's hosted HTTP MCP server in Claude Code's user-scope config. Invoke when the user explicitly asks to set up / install / enable fal.ai in their cookiedclaw workspace.
 allowed-tools: Bash(claude mcp *) Bash(mkdir *) Bash(chmod *) Bash(test *) Bash(pwd) Read Write Edit
 ---
 

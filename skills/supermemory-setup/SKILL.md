@@ -1,7 +1,6 @@
 ---
 name: supermemory-setup
-description: Wires up Supermemory for cross-session semantic memory in cookiedclaw. Saves SUPERMEMORY_CC_API_KEY to ./.cookiedclaw/keys.env, installs the official Supermemory plugin, and helps export the key into the user's shell so CC picks it up at startup. Requires a Supermemory Pro plan.
-disable-model-invocation: true
+description: Wires up Supermemory for cross-session semantic memory in cookiedclaw. Saves SUPERMEMORY_CC_API_KEY to ./.cookiedclaw/keys.env, installs the official Supermemory plugin, and helps export the key into the user's shell so CC picks it up at startup. Requires a Supermemory Pro plan. Invoke when the user explicitly asks to set up / install / enable Supermemory in their cookiedclaw workspace.
 allowed-tools: Bash(claude plugin *) Bash(mkdir *) Bash(chmod *) Bash(test *) Bash(pwd) Bash(echo $SHELL) Read Write Edit WebFetch
 ---
 
