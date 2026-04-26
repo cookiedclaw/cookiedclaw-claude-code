@@ -29,8 +29,9 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { Bot } from "grammy";
+import { Bot, InlineKeyboard } from "grammy";
 import telegramifyMarkdown from "telegramify-markdown";
+import { z } from "zod";
 
 // -----------------------------------------------------------------------------
 // Env loading
@@ -382,7 +383,17 @@ const mcp = new Server(
   { name: "telegram", version: "0.1.0" },
   {
     capabilities: {
-      experimental: { "claude/channel": {} },
+      experimental: {
+        "claude/channel": {},
+        // Permission relay: when CC needs approval for a tool call (Bash,
+        // Write, Edit, etc.), CC posts the prompt here too. We forward it
+        // to the active chat with Allow/Deny inline buttons so the user
+        // can approve from their phone instead of having to be at the
+        // terminal. The local terminal dialog stays open in parallel —
+        // first answer wins. Only safe to declare because we gate inbound
+        // by sender (env allowlist + paired users).
+        "claude/channel/permission": {},
+      },
       tools: {},
     },
     instructions:
@@ -666,6 +677,117 @@ bot.on("message:text", async (ctx) => {
       `[telegram] failed to push notification: ${err instanceof Error ? err.message : err}`,
     );
   }
+});
+
+// -----------------------------------------------------------------------------
+// Permission relay: Telegram inline buttons for tool-approval prompts
+// -----------------------------------------------------------------------------
+
+const PermissionRequestSchema = z.object({
+  method: z.literal("notifications/claude/channel/permission_request"),
+  params: z.object({
+    request_id: z.string(),
+    tool_name: z.string(),
+    description: z.string(),
+    input_preview: z.string(),
+  }),
+});
+
+/**
+ * Maps an open permission request to the Telegram message we sent (so we
+ * can edit it after the verdict, removing buttons and showing the outcome).
+ * Entries leak across long sessions but each is tiny; cleared on verdict
+ * or on the rare "tap stale button after CC moved on" path.
+ */
+const pendingPermissions = new Map<
+  string,
+  { chatId: number; messageId: number }
+>();
+
+function formatPermissionPrompt(p: {
+  tool_name: string;
+  description: string;
+  input_preview: string;
+}): string {
+  const preview = p.input_preview
+    ? `\n\n\`\`\`\n${clamp(p.input_preview, 200)}\n\`\`\``
+    : "";
+  return `🔒 Claude wants to run **${p.tool_name}**\n\n${p.description}${preview}`;
+}
+
+mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
+  if (!activeChatId) {
+    dlog(
+      `permission request with no active chat (tool=${params.tool_name}, id=${params.request_id})`,
+    );
+    return;
+  }
+  const chatId = Number(activeChatId);
+  const kb = new InlineKeyboard()
+    .text("✓ Allow", `perm_allow:${params.request_id}`)
+    .text("✗ Deny", `perm_deny:${params.request_id}`);
+  try {
+    const sent = await bot.api.sendMessage(
+      chatId,
+      toTelegramMd(formatPermissionPrompt(params)),
+      { parse_mode: "MarkdownV2", reply_markup: kb },
+    );
+    pendingPermissions.set(params.request_id, {
+      chatId,
+      messageId: sent.message_id,
+    });
+    dlog(`permission prompt sent: id=${params.request_id} tool=${params.tool_name}`);
+  } catch (err) {
+    console.error(
+      `[telegram] permission relay send failed: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+});
+
+bot.callbackQuery(/^perm_(allow|deny):([a-km-z]{5})$/, async (ctx) => {
+  // Gate by allowlist — anyone who can tap a button in our chat could
+  // approve tool use otherwise, which would let an unauthorized viewer
+  // (forwarded message, accidental share) compromise the session.
+  if (!ctx.from || !isAllowed(ctx.from.id)) {
+    await ctx.answerCallbackQuery({
+      text: "Access denied — your account isn't paired.",
+      show_alert: true,
+    });
+    return;
+  }
+  const verdict = ctx.match[1] as "allow" | "deny";
+  const requestId = ctx.match[2]!;
+
+  try {
+    await mcp.notification({
+      method: "notifications/claude/channel/permission",
+      params: { request_id: requestId, behavior: verdict },
+    });
+  } catch (err) {
+    console.error(
+      `[telegram] permission verdict notification failed: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+
+  // Drop buttons and show the outcome inline so the chat is self-explanatory.
+  const senderName = senderDisplayName(ctx.from);
+  const verdictLine =
+    verdict === "allow"
+      ? `✓ Allowed by ${senderName}`
+      : `✗ Denied by ${senderName}`;
+  try {
+    await ctx.editMessageText(toTelegramMd(verdictLine), {
+      parse_mode: "MarkdownV2",
+    });
+  } catch {
+    // best-effort — message might be too old to edit, that's fine
+  }
+
+  pendingPermissions.delete(requestId);
+  await ctx.answerCallbackQuery({
+    text: verdict === "allow" ? "Approved" : "Denied",
+  });
+  dlog(`permission verdict: id=${requestId} ${verdict} by ${ctx.from.id}`);
 });
 
 bot.catch((err) => {
