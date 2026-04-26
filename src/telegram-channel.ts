@@ -30,6 +30,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { Bot, InlineKeyboard, InputFile } from "grammy";
+import matter from "gray-matter";
 import telegramifyMarkdown from "telegramify-markdown";
 import { z } from "zod";
 
@@ -1210,20 +1211,21 @@ if (progressPort !== undefined) {
 
 type DiscoveredCommand = { command: string; description: string };
 
-/** Extract `description` from a SKILL.md / command.md YAML frontmatter block. */
+/**
+ * Extract `description` from a SKILL.md / command.md YAML frontmatter
+ * block. gray-matter handles the awkward cases (multi-line strings,
+ * quoted/unquoted, special chars, etc.) that our hand-rolled regex
+ * wouldn't.
+ */
 function parseFrontmatterDescription(raw: string): string | undefined {
-  const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!m) return undefined;
-  const desc = (m[1] ?? "").match(/^description:\s*(.+?)\s*$/m);
-  if (!desc) return undefined;
-  let value = desc[1] ?? "";
-  if (
-    (value.startsWith('"') && value.endsWith('"')) ||
-    (value.startsWith("'") && value.endsWith("'"))
-  ) {
-    value = value.slice(1, -1);
+  let parsed: { data: Record<string, unknown> };
+  try {
+    parsed = matter(raw);
+  } catch {
+    return undefined;
   }
-  return value.trim() || undefined;
+  const desc = parsed.data?.description;
+  return typeof desc === "string" && desc.trim() ? desc.trim() : undefined;
 }
 
 /**
@@ -1323,6 +1325,46 @@ const HIDDEN_PATTERNS = [
   /^superpowers_/,
 ];
 
+type InstalledPlugin = {
+  id: string;
+  installPath: string;
+  enabled: boolean;
+};
+
+/**
+ * Authoritative list of installed + enabled plugins from CC itself.
+ * Beats globbing `~/.claude/plugins/cache/*\/*\/*\/` because:
+ *  - CC tells us which version is active (cache may hold many)
+ *  - Disabled plugins are filtered out
+ *  - We get the canonical install path
+ *
+ * Falls back to an empty list on any failure (CC missing from PATH,
+ * stale cache, etc.) — discovery degrades to user/project skills only.
+ */
+async function listEnabledPlugins(): Promise<InstalledPlugin[]> {
+  try {
+    const proc = Bun.spawn(["claude", "plugin", "list", "--json"], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const out = await new Response(proc.stdout).text();
+    const exit = await proc.exited;
+    if (exit !== 0 || !out.trim()) return [];
+    const parsed = JSON.parse(out) as Array<Partial<InstalledPlugin>>;
+    return parsed.filter(
+      (p): p is InstalledPlugin =>
+        typeof p.id === "string" &&
+        typeof p.installPath === "string" &&
+        p.enabled === true,
+    );
+  } catch (err) {
+    dlog(
+      `claude plugin list failed: ${err instanceof Error ? err.message : err}`,
+    );
+    return [];
+  }
+}
+
 async function discoverCommands(): Promise<DiscoveredCommand[]> {
   const home = process.env.HOME ?? "/";
   const homeClaudeDir = resolve(home, ".claude");
@@ -1333,36 +1375,17 @@ async function discoverCommands(): Promise<DiscoveredCommand[]> {
   // This project's .claude/ — skills/commands shipped with the repo.
   await readSkillsAt(resolve(projectRoot, ".claude"), undefined, out);
 
-  // Each installed plugin: ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/.
-  // We dedup by normalized command name so multiple cached versions of
-  // the same plugin don't multiply entries — last write wins (which
-  // alphabetically is usually the highest version).
-  const pluginCache = resolve(homeClaudeDir, "plugins", "cache");
-  if (existsSync(pluginCache)) {
-    const glob = new Bun.Glob("*/*/*");
-    for await (const rel of glob.scan({
-      cwd: pluginCache,
-      onlyFiles: false,
-    })) {
-      const pluginRoot = resolve(pluginCache, rel);
-      let name = rel.split("/")[1] ?? "";
-      try {
-        const pj = JSON.parse(
-          await Bun.file(
-            resolve(pluginRoot, ".claude-plugin", "plugin.json"),
-          ).text(),
-        ) as { name?: unknown };
-        if (typeof pj.name === "string") name = pj.name;
-      } catch {
-        // fall back to dir name
-      }
-      try {
-        await readSkillsAt(pluginRoot, name, out);
-      } catch (err) {
-        dlog(
-          `skill scan failed for plugin ${name}: ${err instanceof Error ? err.message : err}`,
-        );
-      }
+  // Plugins: ask CC directly — it knows which version is active and which
+  // are enabled. Plugin id is "<name>@<marketplace>"; namespace = name.
+  const plugins = await listEnabledPlugins();
+  for (const p of plugins) {
+    const namespace = p.id.split("@")[0] ?? p.id;
+    try {
+      await readSkillsAt(p.installPath, namespace, out);
+    } catch (err) {
+      dlog(
+        `skill scan failed for plugin ${namespace}: ${err instanceof Error ? err.message : err}`,
+      );
     }
   }
 
