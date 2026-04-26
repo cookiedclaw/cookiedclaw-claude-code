@@ -36,3 +36,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Test artifacts created by the agent during e2e
 hello_world.txt
+
+# cookiedclaw runtime workspace state if the repo dir gets used as a workspace
+.cookiedclaw/
