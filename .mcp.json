@@ -2,7 +2,7 @@
   "mcpServers": {
     "telegram": {
       "command": "bun",
-      "args": ["./src/telegram-channel.ts"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/src/telegram-channel.ts"]
     }
   }
 }

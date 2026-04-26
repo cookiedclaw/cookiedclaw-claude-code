@@ -73,17 +73,16 @@ Restart CC with the same flag, DM your bot, and pair yourself with the code the 
 <details>
 <summary>Developer setup (cloning the repo)</summary>
 
-If you're hacking on cookiedclaw itself, clone and run from the project directory instead of installing as a plugin:
+If you're hacking on cookiedclaw itself, load this checkout as a plugin via `--plugin-dir`:
 
 ```bash
 git clone git@github.com:cookiedclaw/cookiedclaw.git
 cd cookiedclaw
 bun install
-claude --dangerously-load-development-channels server:telegram
+claude --plugin-dir . --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
 ```
 
-> [!WARNING]
-> Don't combine `--plugin-dir .` with this flow. CC will register the same MCP server twice (once as project, once as plugin) and only one will be opted in as a channel — you'll end up with a working `reply` tool but no inbound message routing.
+The MCP server config (`.mcp.json`) uses `${CLAUDE_PLUGIN_ROOT}` which only resolves when CC loads this dir as a plugin — that's why bare project mode (no `--plugin-dir`) doesn't work.
 
 </details>
 
