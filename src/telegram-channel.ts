@@ -573,10 +573,11 @@ const mcp = new Server(
       tools: {},
     },
     instructions:
-      'Telegram messages arrive as <channel source="telegram" chat_id="..." sender="..." [attachment="/abs/path"]>. ' +
+      'Telegram messages arrive as <channel source="telegram" chat_id="..." sender="..." message_id="..." [attachment="/abs/path"]>. ' +
       "To reply, call the `reply` tool with the chat_id from the tag and your message text. " +
       "The chat is private DM with one user — no need for /commands or @mentions in your reply. " +
       "Be conversational, concise, and ground claims in tool results when appropriate.\n\n" +
+      "When to react instead of reply: if the user's message is a short acknowledgment or social closer (\"thanks\", \"got it\", \"ok\", \"cool\", \"спасибо\", \"👍\", \"perfect\"), prefer the `react` tool with a fitting emoji from Telegram's allowed list (👍 ❤️ 🙏 🔥 🎉 etc.) over generating a text reply. Reactions show you saw the message and end the turn cleanly without burning tokens or adding noise. Pass `chat_id` and `message_id` from the inbound channel tag. Only one of `react` / `reply` per turn — they both close out the typing indicator and progress log.\n\n" +
       "Inbound attachments: if the channel tag has an `attachment` attribute, the user attached a file at that absolute path. " +
       "For images/photos, use the Read tool — it handles vision so you can actually see the image. " +
       "For other files (PDFs, docs, audio, etc.), use Read or Bash as appropriate. " +
@@ -611,6 +612,30 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ["chat_id", "text"],
+      },
+    },
+    {
+      name: "react",
+      description:
+        "Add an emoji reaction to the user's inbound message instead of sending a full text reply. Use this for short acknowledgments (\"thanks\", \"got it\", \"ok\", \"cool\") where a generated reply would just be noise — the reaction shows the user you saw their message and ends the turn cleanly. Don't use for substantive responses; use `reply` for those. " +
+        "Allowed emojis are limited to Telegram's curated standard set: 👍 👎 ❤️ 🔥 🥰 👏 😁 🤔 🤯 😱 🤬 😢 🎉 🤩 🤮 💩 🙏 👌 🕊 🤡 🥱 🥴 😍 🐳 ❤️‍🔥 🌚 🌭 💯 🤣 ⚡️ 🍌 🏆 💔 🤨 😐 🍓 🍾 💋 🖕 😈 😴 😭 🤓 👻 👨‍💻 👀 🎃 🙈 😇 😨 🤝 ✍️ 🤗 🫡 🎅 🎄 ☃️ 💅 🤪 🗿 🆒 💘 🙉 🦄 😘 💊 🙊 😎 👾 🤷‍♂️ 🤷 🤷‍♀️ 😡. Custom/premium emoji are not supported here.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          chat_id: {
+            type: "string",
+            description: "Telegram chat ID from the inbound channel tag.",
+          },
+          message_id: {
+            type: "string",
+            description: "Telegram message_id from the inbound channel tag — this is the user's message you're reacting to.",
+          },
+          emoji: {
+            type: "string",
+            description: "A single emoji from Telegram's allowed list (see tool description). One emoji per call.",
+          },
+        },
+        required: ["chat_id", "message_id", "emoji"],
       },
     },
     {
@@ -698,6 +723,54 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[telegram] reply failed (chat ${chat_id}): ${msg}`);
+      return {
+        content: [{ type: "text", text: `failed: ${msg}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === "react") {
+    const { chat_id, message_id, emoji } = args as {
+      chat_id: string;
+      message_id: string;
+      emoji: string;
+    };
+    // Same end-of-turn cleanup as reply: typing off, drop the progress
+    // message, reset events. Reacting IS the answer — no follow-up text.
+    stopTyping(chat_id);
+    await queueEdit(chat_id, async () => {
+      const state = chats.get(chat_id);
+      if (state?.progressMessageId !== undefined) {
+        try {
+          await bot.api.deleteMessage(
+            Number(chat_id),
+            state.progressMessageId,
+          );
+        } catch (err) {
+          console.error(
+            `[telegram] couldn't delete progress message before react: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+        state.progressMessageId = undefined;
+      }
+    });
+    try {
+      // grammy types `emoji` as a strict union of Telegram's allowed
+      // emoji literals; we accept any string from CC at runtime and let
+      // Telegram reject if it's not allowed. Cast through unknown here.
+      await bot.api.setMessageReaction(Number(chat_id), Number(message_id), [
+        { type: "emoji", emoji } as unknown as Parameters<
+          typeof bot.api.setMessageReaction
+        >[2][number],
+      ]);
+      chats.set(chat_id, { events: [] });
+      return { content: [{ type: "text", text: `reacted with ${emoji}` }] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[telegram] react failed (chat ${chat_id} msg ${message_id} emoji ${emoji}): ${msg}`,
+      );
       return {
         content: [{ type: "text", text: `failed: ${msg}` }],
         isError: true,
@@ -845,11 +918,16 @@ async function downloadTelegramFile(
  * Shared post-allowlist forwarding: set active chat, push a channel
  * notification to CC. Text-only and attachment cases differ only in
  * whether `attachmentPath` is set.
+ *
+ * `messageId` is the inbound message's Telegram id — surfaced to CC via
+ * meta so the `react` tool can target it (you can't react to a message
+ * without knowing its id).
  */
 async function forwardToCC(
   chatId: string,
   senderId: string,
   senderLabel: string,
+  messageId: number,
   content: string,
   attachmentPath?: string,
 ): Promise<void> {
@@ -857,12 +935,13 @@ async function forwardToCC(
   chats.set(chatId, { events: [] });
   startTyping(chatId);
   dlog(
-    `inbound: chat=${chatId} sender=${senderId}${attachmentPath ? ` attachment=${attachmentPath}` : ""}`,
+    `inbound: chat=${chatId} sender=${senderId} msg=${messageId}${attachmentPath ? ` attachment=${attachmentPath}` : ""}`,
   );
   const meta: Record<string, string> = {
     chat_id: chatId,
     sender_id: senderId,
     sender: senderLabel,
+    message_id: String(messageId),
   };
   if (attachmentPath) meta.attachment = attachmentPath;
   try {
@@ -927,6 +1006,7 @@ bot.on("message:text", async (ctx) => {
     String(ctx.chat.id),
     gated.senderId,
     gated.senderLabel,
+    ctx.message.message_id,
     ctx.message.text,
   );
 });
@@ -955,6 +1035,7 @@ bot.on("message:photo", async (ctx) => {
     String(ctx.chat.id),
     gated.senderId,
     gated.senderLabel,
+    ctx.message.message_id,
     ctx.message.caption ?? "",
     attachmentPath,
   );
@@ -979,6 +1060,7 @@ bot.on("message:document", async (ctx) => {
     String(ctx.chat.id),
     gated.senderId,
     gated.senderLabel,
+    ctx.message.message_id,
     ctx.message.caption ?? "",
     attachmentPath,
   );
