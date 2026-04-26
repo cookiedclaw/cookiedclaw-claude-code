@@ -1,0 +1,4 @@
+Hello, world!
+
+This file was created on 2026-04-26 — a small greeting from cookiedclaw.
+May your builds be green and your context windows wide.

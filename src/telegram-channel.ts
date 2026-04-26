@@ -125,9 +125,17 @@ function queueEdit<T>(chatId: string, fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
-/** Skip `reply` (and its mcp__telegram__reply alias) — those are OUR final-output tool, not progress. */
+/**
+ * Skip our `reply` tool from the progress log — it's the final output
+ * channel, not "progress". CC namespaces it differently depending on
+ * load context: plain `reply` (direct call from main session, rare),
+ * `mcp__telegram__reply` (when loaded via .mcp.json), or
+ * `mcp__plugin_<plugin>_<server>__reply` (when loaded via --plugin-dir).
+ * The scope between `mcp__` and `__reply` can contain underscores, so
+ * accept anything in there.
+ */
 function isReplyTool(name: string): boolean {
-  return name === "reply" || /^mcp__[^_]+__reply$/.test(name);
+  return name === "reply" || /^mcp__.+__reply$/.test(name);
 }
 
 function summarizeToolInput(name: string, input: unknown): string {
