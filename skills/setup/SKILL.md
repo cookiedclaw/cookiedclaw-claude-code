@@ -1,5 +1,5 @@
 ---
-name: cookiedclaw-setup
+name: setup
 description: Configure cookiedclaw integrations — fal.ai for image generation, Supermemory for long-term memory. Walks through API key setup and registers the matching MCP servers in Claude Code so they become available across all sessions (including via the Telegram bot).
 disable-model-invocation: true
 allowed-tools: Bash(claude mcp *) Bash(mkdir *) Bash(chmod *) Bash(test *) Read Write Edit WebSearch WebFetch
