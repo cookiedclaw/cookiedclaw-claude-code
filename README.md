@@ -110,6 +110,28 @@ Per-user state lives in `~/.cookiedclaw/`. The setup wizard creates and maintain
 > [!TIP]
 > Diagnostics live in `~/.cache/cookiedclaw/progress.log` — channel server and hook script both write here. If something doesn't reach Telegram, that log usually shows where the chain broke (server didn't bind, hook couldn't find the port, no active chat, etc.).
 
+## Running on a server
+
+Once configured, you usually want cookiedclaw running 24/7 — not tied to your laptop. The simplest path is `tmux`: a session that keeps CC alive after you disconnect from SSH.
+
+```bash
+ssh -L 8080:localhost:8080 user@your-server   # one-time, port-forward for the OAuth flow
+claude /login                                  # browser auth — happens once
+tmux new -s cookied                            # start a named session
+claude --dangerously-load-development-channels server:telegram
+# Ctrl+b d  to detach — session keeps running, you can exit SSH
+```
+
+To come back later:
+
+```bash
+ssh user@your-server
+tmux attach -t cookied
+```
+
+> [!NOTE]
+> A server reboot kills the tmux session — you'll need to `tmux new` and start CC again. If you want auto-start-on-boot and auto-restart-on-crash, wrap this in a systemd `--user` unit.
+
 ## Roadmap
 
 - **Marketplace publish** so the dev flag goes away and install becomes one line of `/plugin install`.

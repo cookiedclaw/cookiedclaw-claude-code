@@ -209,6 +209,21 @@ Summarize what got configured in one short list. Then:
   - `~/.cookiedclaw/{IDENTITY,USER,SOUL}.md` → continuity-of-self files, persist forever, edit any time (CC picks up changes on restart)
 - If they configured nothing (just looked around): say so cheerfully. `/cookiedclaw:setup` is always there.
 
+If you can detect this is a remote / headless setup (e.g. `$SSH_CONNECTION` is set, no `$DISPLAY`), also tell them how to keep cookiedclaw alive after they disconnect from SSH:
+
+````
+For 24/7 runs, wrap CC in tmux so it survives SSH disconnects:
+
+  tmux new -s cookied
+  claude --dangerously-load-development-channels server:telegram
+  # Ctrl+b d to detach — session keeps running
+
+Reattach later with `tmux attach -t cookied`. A server reboot kills the
+session, so add a systemd --user unit if you want auto-start.
+````
+
+Don't paste this on a local Mac/desktop session — it's noise there.
+
 ## Don'ts
 
 - Don't run `claude mcp add` or `claude plugin install` without confirming the exact command with the user first.
