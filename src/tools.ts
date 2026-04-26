@@ -47,10 +47,20 @@ mcp.registerTool(
     try {
       const { embeds, cleaned } = extractEmbeds(text);
       await sendReply(Number(chat_id), cleaned, embeds);
+      // A second user message may have arrived during the await above and
+      // started a fresh typing interval. Stop again so we don't leak that
+      // interval when we reset state below. (Idempotent if nothing's running.)
+      stopTyping(chat_id);
       // Turn done for this chat — drop from pending so further hook
-      // events stop fanning out to it. Reset events for next round.
+      // events stop fanning out to it. Reset events in place rather than
+      // replacing the state object so we don't orphan any typing reference
+      // a concurrent forwardToCC might still hold.
       pendingChats.delete(chat_id);
-      chats.set(chat_id, { events: [] });
+      const state = chats.get(chat_id);
+      if (state) {
+        state.events = [];
+        state.progressMessageId = undefined;
+      }
       const note =
         embeds.length > 0
           ? `sent (text + ${embeds.length} attachment${embeds.length === 1 ? "" : "s"})`
@@ -105,8 +115,15 @@ mcp.registerTool(
           typeof bot.api.setMessageReaction
         >[2][number],
       ]);
+      // See `reply` — clear typing again in case a concurrent inbound
+      // started a fresh interval during the API await above.
+      stopTyping(chat_id);
       pendingChats.delete(chat_id);
-      chats.set(chat_id, { events: [] });
+      const state = chats.get(chat_id);
+      if (state) {
+        state.events = [];
+        state.progressMessageId = undefined;
+      }
       return { content: [{ type: "text", text: `reacted with ${emoji}` }] };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

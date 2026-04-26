@@ -46,8 +46,18 @@ async function forwardToCC(
   setActiveChatId(chatId);
   pendingChats.add(chatId);
   // Reset this chat's tool log — it's the start of their turn. Other
-  // pending chats keep whatever they had.
-  chats.set(chatId, { events: [] });
+  // pending chats keep whatever they had. Mutate the existing state
+  // object instead of replacing it: replacing would orphan a typing
+  // interval started by an earlier forwardToCC, leaking a setInterval
+  // that pings "typing..." forever.
+  let state = chats.get(chatId);
+  if (state) {
+    state.events = [];
+    state.progressMessageId = undefined;
+  } else {
+    state = { events: [] };
+    chats.set(chatId, state);
+  }
   startTyping(chatId);
   dlog(
     `inbound: chat=${chatId} sender=${senderId} msg=${messageId}${attachmentPath ? ` attachment=${attachmentPath}` : ""}`,
@@ -146,7 +156,16 @@ async function handleStopCommand(
 ): Promise<void> {
   stopTyping(chatId);
   await deleteProgressMessage(chatId);
-  chats.set(chatId, { events: [] });
+  // Reset events in place; replacing the state object would orphan any
+  // typing interval a concurrent forwardToCC might have started.
+  let state = chats.get(chatId);
+  if (state) {
+    state.events = [];
+    state.progressMessageId = undefined;
+  } else {
+    state = { events: [] };
+    chats.set(chatId, state);
+  }
   setActiveChatId(chatId);
   // /stop ends this chat's turn from the user side — agent will ack
   // shortly and we'll remove from pending then. Until then they're

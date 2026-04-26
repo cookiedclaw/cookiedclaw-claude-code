@@ -1,15 +1,17 @@
 ---
 name: setup
-description: First-run setup for cookiedclaw — wires the current working directory as a self-contained agent workspace. Writes CLAUDE.md (system prompt), BOOTSTRAP.md (first-contact discovery), and ./.cookiedclaw/keys.env (bot token). Optional fal.ai / Supermemory integrations. Each workspace = one independent agent.
+description: First-run setup for cookiedclaw — wires the current working directory as a self-contained agent workspace. Writes CLAUDE.md (system prompt), BOOTSTRAP.md (first-contact discovery), and ./.cookiedclaw/keys.env (bot token). Each workspace = one independent agent. For optional integrations like fal.ai or Supermemory, see the standalone /cookiedclaw:fal-setup and /cookiedclaw:supermemory-setup skills.
 disable-model-invocation: true
-allowed-tools: Bash(claude mcp *) Bash(claude plugin *) Bash(mkdir *) Bash(chmod *) Bash(test *) Bash(echo $SHELL) Bash(pwd) Bash(ls *) Read Write Edit WebSearch WebFetch
+allowed-tools: Bash(mkdir *) Bash(chmod *) Bash(test *) Bash(pwd) Bash(ls *) Read Write Edit
 ---
 
 # cookiedclaw onboarding wizard
 
 You are walking the user through setting up cookiedclaw **in the current working directory**. Each workspace is a self-contained agent: own bot token, own identity, own pairing list. The user can have multiple agents by running this skill from different directories.
 
-There's exactly one **required** step (the Telegram bot token) followed by a menu of **optional** integrations. At the end you write three files into the workspace root: `CLAUDE.md` (system prompt CC auto-loads), `BOOTSTRAP.md` (first-contact identity discovery), and `./.cookiedclaw/keys.env` (the token).
+This is the **core** wizard — just the Telegram bot token plus the workspace files needed for the agent to know itself and use the channel. Optional integrations (fal.ai, Supermemory) are separate skills the user can invoke later (`/cookiedclaw:fal-setup`, `/cookiedclaw:supermemory-setup`) without re-running this whole flow.
+
+You write three files into the workspace root: `CLAUDE.md` (system prompt CC auto-loads), `BOOTSTRAP.md` (first-contact identity discovery), and `./.cookiedclaw/keys.env` (the token).
 
 Be conversational. Ask one thing at a time. Never paste API keys or tokens back to the user — they typed them, treat them as secrets. Don't echo them in confirmations.
 
@@ -58,18 +60,11 @@ If the path looks fine (an empty / dedicated directory) — skip the question an
 
 ## Step 1 — Survey current state (no questions yet)
 
-Read `./.cookiedclaw/keys.env` if it exists. Note presence of:
-
-- `TELEGRAM_BOT_TOKEN` (or legacy `TELEGRAM_API_TOKEN`) — the required one
-- `FAL_KEY` — optional, fal.ai
-- `SUPERMEMORY_CC_API_KEY` — optional, Supermemory
-
-Also run `claude mcp list` and `claude plugin list --json` to detect anything related (`fal`, `supermemory`, `claude-supermemory`).
+Read `./.cookiedclaw/keys.env` if it exists. Note presence of `TELEGRAM_BOT_TOKEN` (or legacy `TELEGRAM_API_TOKEN`).
 
 Tell the user the current state in one or two sentences. Examples:
 - *"Looks like nothing's configured yet — let's start with the Telegram bot."*
-- *"Telegram bot is set up; fal.ai and Supermemory aren't."*
-- *"Everything's already configured. Want to re-do anything?"*
+- *"Telegram bot is already set up. Want to re-do anything, or are we just here for the workspace files?"*
 
 ## Step 2 — REQUIRED: Telegram bot token
 
@@ -90,74 +85,13 @@ Otherwise:
    - `mkdir -p ./.cookiedclaw` first
    - If file already has a `TELEGRAM_BOT_TOKEN=` or `TELEGRAM_API_TOKEN=` line, replace it; otherwise append
    - `chmod 600 ./.cookiedclaw/keys.env`
-5. Tell the user: *"Token saved. The bot won't actually start polling until cookiedclaw restarts — we'll do that at the end after any optional integrations."*
+5. Tell the user: *"Token saved. The bot won't actually start polling until cookiedclaw restarts — we'll do that at the end."*
 
-## Step 3 — Offer optional integrations
-
-Make it crystal clear these are **optional** — cookiedclaw works fine without them.
-
-Use the `AskUserQuestion` tool with a multi-select question:
-
-- **Question**: "These are optional integrations. Which would you like to set up now? (You can always come back to `/cookiedclaw:setup` later.)"
-- **Options**:
-  - `fal.ai` — image generation (text-to-image, image editing, lipsync, video). Free tier available.
-  - `Supermemory` — persistent semantic memory across sessions. Auto-captures context. Requires a Supermemory Pro plan.
-  - `Skip — I'll set these up later`
-
-If the user picks "Skip", jump straight to Step 5.
-
-Otherwise loop through chosen integrations in Step 4. Skip anything already configured unless the user says they want to re-do it.
-
-(Tavily / web search isn't on the list because Claude has built-in `WebSearch` and `WebFetch`.)
-
-## Step 4 — For each chosen optional integration
-
-Loop through whichever ones the user picked. Finish one before starting the next.
-
-### fal.ai (optional)
-
-1. Tell the user: *"Open https://fal.ai/dashboard/keys, create a new key, and paste it here."*
-2. Wait for the key. Validate that it looks like a fal credential (typically `<id>:<secret>`, or starts with `fal_`). If it doesn't, ask them to double-check.
-3. Save to `./.cookiedclaw/keys.env` as `FAL_KEY=<value>` (replace existing line if present, otherwise append). Re-`chmod 600`.
-4. Register fal.ai's hosted HTTP MCP server. Use `AskUserQuestion`:
-   - **Question**: "Register the fal.ai MCP server now? (Stores your token in CC's user-scope MCP config so every session can use it.)"
-   - **Options**: `Yes, register it`, `No, I'll do it manually later`
-   On yes, run:
-   ```
-   claude mcp add --transport http fal-ai \
-     https://mcp.fal.ai/mcp \
-     -s user \
-     --header "Authorization: Bearer <value>"
-   ```
-5. Confirm: *"fal.ai set up. After we restart at the end, Telegram bot and CC sessions can both generate images."*
-
-### Supermemory (optional)
-
-Supermemory ships as a first-class CC plugin. **Requires a Supermemory Pro plan**; mention this BEFORE the user signs up if they don't already have one.
-
-1. Tell the user: *"Open https://console.supermemory.ai/keys, create an API key (starts with `sm_`), and paste it here."*
-2. Wait for the key. Save to `./.cookiedclaw/keys.env` as `SUPERMEMORY_CC_API_KEY=<value>`.
-3. Install Supermemory's official plugin. Use `AskUserQuestion`:
-   - **Question**: "Install the Supermemory plugin now? (Adds their marketplace, installs claude-supermemory.)"
-   - **Options**: `Yes, install`, `No, I'll do it manually later`
-   On yes, run:
-   ```
-   claude plugin marketplace add supermemoryai/claude-supermemory
-   claude plugin install claude-supermemory
-   ```
-4. The plugin reads `SUPERMEMORY_CC_API_KEY` from env. Detect shell (`echo $SHELL`) and use `AskUserQuestion`:
-   - **Question**: "Where should I put `SUPERMEMORY_CC_API_KEY` so it sticks across CC restarts?"
-   - **Options**:
-     - `Append to my shell rc (<detected rc path>)` — we add an `export` line for you
-     - `Show me the line, I'll do it myself` — we just print it
-     - `Use ~/.supermemory-claude/settings.json instead` — point them at https://supermemory.ai/docs/integrations/claude-code
-5. Confirm: *"Supermemory set up. Restart your shell before restarting Claude Code at the end."*
-
-## Step 5 — Write the workspace files
+## Step 3 — Write the workspace files
 
 This is the heart of the setup. Three files, all in the **current working directory** (workspace root). Use `Write` for each.
 
-### 5a. `CLAUDE.md` — system prompt CC auto-loads
+### 3a. `CLAUDE.md` — system prompt CC auto-loads
 
 CC reads `CLAUDE.md` from the working directory at every session start and injects it into the system prompt. This is what tells the agent who it is and how to use the channel. Adapt freely — feel natural, not robotic.
 
@@ -207,7 +141,7 @@ When inbound starts with `/<cmd>`, the user tapped a command from the bot's menu
 
 If a workspace `CLAUDE.md` already exists, ask via `AskUserQuestion` whether to overwrite, append a `cookiedclaw` section, or skip (user knows what they're doing).
 
-### 5b. `BOOTSTRAP.md` — first-contact discovery script
+### 3b. `BOOTSTRAP.md` — first-contact discovery script
 
 Skip this step if `IDENTITY.md`, `USER.md`, AND `SOUL.md` all already exist in the workspace — discovery already happened.
 
@@ -254,13 +188,13 @@ Per https://soul.md/. Narrative/essay style, first-person. Cover values (e.g. ho
 Run `bash rm ./BOOTSTRAP.md` so this script doesn't fire again. From the next session onward, IDENTITY/USER/SOUL.md (read at session start) carry the context.
 ````
 
-### 5c. `./.cookiedclaw/keys.env`
+### 3c. `./.cookiedclaw/keys.env`
 
-Already written in Step 2 / Step 4. Just confirm `chmod 600` is set.
+Already written in Step 2. Just confirm `chmod 600` is set.
 
-## Step 6 — Wrap up
+## Step 4 — Wrap up
 
-Summarize what got configured (workspace path, files written, integrations enabled). Then:
+Summarize what got configured (workspace path, files written). Then:
 
 - Tell them **restart Claude Code from this directory** so the channel server picks up the token: `cd <workspace-path> && claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw`. CC needs to be in this dir for `CLAUDE.md` auto-injection to work.
 - Briefly explain the workspace-file lifecycle:
@@ -269,6 +203,10 @@ Summarize what got configured (workspace path, files written, integrations enabl
   - `./IDENTITY.md`, `./USER.md`, `./SOUL.md` → continuity-of-self files, edit any time
   - `./.cookiedclaw/keys.env` → secrets (chmod 600). Editing rotates keys.
 - Mention multi-bot: if they ever want a second cookiedclaw (work bot, family bot, …) just rerun this skill from a different empty directory.
+- Point them at the optional integrations as separate skills they can run any time:
+  - `/cookiedclaw:fal-setup` — image / video generation via fal.ai
+  - `/cookiedclaw:supermemory-setup` — cross-session semantic memory (requires Supermemory Pro)
+  Both are independent — they won't re-trigger this whole flow.
 - If they configured nothing (just looked around): say so cheerfully. `/cookiedclaw:setup` is always there.
 
 If you can detect this is a remote / headless setup (e.g. `$SSH_CONNECTION` is set, no `$DISPLAY`), also tell them how to keep cookiedclaw alive after they disconnect:
