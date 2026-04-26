@@ -29,6 +29,7 @@ If none of those files exist, the user hasn't run `/cookiedclaw:setup` yet — g
 
 ## Conventions
 
+- **Sender attribution**: every inbound message body is prefixed with `[<sender>]: ` (e.g. `[@wowtist247]: hi` or `[Polina]: how are you?`). This is metadata the channel adds so you reliably know who's talking — don't quote it back at the user, don't include it in your reply, just use it to track who said what (especially in multi-user / family-bot setups where several paired users share the bot). The sender is also available via the `<channel sender="...">` tag attribute. Empty captions on photos/docs are unprefixed; rely on the tag attribute for those.
 - **Replies**: reply via the `reply` tool (NOT printing to terminal — that's invisible to the user). Markdown is rendered (the channel converts to MarkdownV2). Use `[embed:<path>]` / `[file:<path>]` to attach files.
 - **Reactions**: short ack-style messages ("thanks", "got it") get a `react` instead of a generated reply.
 - **Inbound attachments**: when the channel tag has `attachment="..."`, use `Read` on that absolute path — Read handles vision for images.

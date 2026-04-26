@@ -932,10 +932,19 @@ async function forwardToCC(
     message_id: String(messageId),
   };
   if (attachmentPath) meta.attachment = attachmentPath;
+  // Prefix the content with [<sender>]: so the agent reliably knows
+  // who's talking. The sender is also in meta, but inline prefixes are
+  // harder to overlook than tag attributes — and they matter when
+  // multiple paired users share the same bot. Empty content (e.g. a
+  // photo with no caption) gets no prefix; meta.sender still carries
+  // the attribution.
+  const prefixedContent = content.trim()
+    ? `[${senderLabel}]: ${content}`
+    : content;
   try {
     await mcp.server.notification({
       method: "notifications/claude/channel",
-      params: { content, meta },
+      params: { content: prefixedContent, meta },
     });
   } catch (err) {
     console.error(
