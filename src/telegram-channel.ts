@@ -15,6 +15,7 @@
  *                            (NOT recommended — any sender becomes a prompt
  *                            injection vector).
  */
+import { resolve } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -23,9 +24,41 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { Bot } from "grammy";
 
-const token = process.env.TELEGRAM_BOT_TOKEN;
+// Try loading .env from the project root (parent of src/) regardless of how
+// CC spawned us. Bun auto-loads .env from process.cwd(), but CC's spawn cwd
+// isn't always our project root, so we explicitly hint at the right path.
+const projectRoot = resolve(import.meta.dir, "..");
+const envPath = resolve(projectRoot, ".env");
+const envFile = Bun.file(envPath);
+if (await envFile.exists()) {
+  const envText = await envFile.text();
+  for (const line of envText.split("\n")) {
+    const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/i);
+    if (!m) continue;
+    const [, key, rawValue] = m as unknown as [string, string, string];
+    if (process.env[key]) continue;
+    const value = rawValue.replace(/^['"]|['"]$/g, "");
+    process.env[key] = value;
+  }
+  console.error(`[telegram] loaded env from ${envPath}`);
+} else {
+  console.error(`[telegram] no .env at ${envPath} (relying on shell env)`);
+}
+
+// Accept either TELEGRAM_BOT_TOKEN (matches the official Anthropic plugin's
+// convention) or the older TELEGRAM_API_TOKEN that previous cookiedclaw
+// versions used. Less friction for upgrade-in-place.
+const token =
+  process.env.TELEGRAM_BOT_TOKEN ?? process.env.TELEGRAM_API_TOKEN;
 if (!token) {
-  console.error("[telegram] TELEGRAM_BOT_TOKEN is not set");
+  console.error(
+    `[telegram] no Telegram bot token found (looked for TELEGRAM_BOT_TOKEN, then TELEGRAM_API_TOKEN).\n` +
+      `  Either put it in ${envPath}\n` +
+      `  or export it in your shell BEFORE launching claude:\n` +
+      `    export TELEGRAM_BOT_TOKEN=...\n` +
+      `    export TELEGRAM_ALLOWED_USERS=<your_telegram_user_id>\n` +
+      `    claude --dangerously-load-development-channels server:telegram`,
+  );
   process.exit(1);
 }
 
@@ -41,7 +74,8 @@ const allowedUsers = new Set(
 if (!allowAll && allowedUsers.size === 0) {
   console.error(
     "[telegram] TELEGRAM_ALLOWED_USERS is empty — every message will be dropped. " +
-      "Set it to a comma-separated list of Telegram user IDs (or `*` to allow all).",
+      "Set it to a comma-separated list of Telegram user IDs (DM @userinfobot to find yours), " +
+      "or set it to `*` to disable the allowlist for testing.",
   );
 }
 
