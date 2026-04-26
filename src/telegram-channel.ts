@@ -21,7 +21,7 @@
  *                            (NOT recommended — any sender becomes a prompt
  *                            injection vector).
  */
-import { appendFile, mkdirSync } from "node:fs";
+import { appendFile, existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -556,7 +556,8 @@ const mcp = new Server(
       "`embed` auto-detects: image MIMEs go as compressed Telegram photos (rendered inline), everything else as documents. " +
       "`file` always sends as a document (no compression — use for original-quality images or when the user asked 'as a file'). " +
       "URLs work too (`[embed:https://...]`); we download and forward. " +
-      "Markers are stripped from the visible text before sending; users see clean text + the attachment.",
+      "Markers are stripped from the visible text before sending; users see clean text + the attachment.\n\n" +
+      "Slash commands from the Telegram menu: when an inbound message starts with `/<cmd>`, the user tapped a command from the bot's menu, which mirrors the skills available in this CC environment. The menu name uses underscores instead of hyphens/colons (e.g. `/cookiedclaw_setup` for the `cookiedclaw:setup` skill, `/code_review` for `code-review`, `/svelte_svelte_code_writer` for `svelte:svelte-code-writer`). Treat this as an explicit invocation of that skill — load and run it.",
   },
 );
 
@@ -1204,6 +1205,226 @@ if (progressPort !== undefined) {
 }
 
 // -----------------------------------------------------------------------------
+// CC skill / command discovery → Telegram bot menu
+// -----------------------------------------------------------------------------
+
+type DiscoveredCommand = { command: string; description: string };
+
+/** Extract `description` from a SKILL.md / command.md YAML frontmatter block. */
+function parseFrontmatterDescription(raw: string): string | undefined {
+  const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!m) return undefined;
+  const desc = (m[1] ?? "").match(/^description:\s*(.+?)\s*$/m);
+  if (!desc) return undefined;
+  let value = desc[1] ?? "";
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    value = value.slice(1, -1);
+  }
+  return value.trim() || undefined;
+}
+
+/**
+ * Telegram bot commands must match `[a-z0-9_]{1,32}`. Skills can have
+ * hyphens; plugin namespaces use `:`. Squash both to underscores and
+ * drop anything else; truncate to 32 chars.
+ */
+function normalizeCommandName(raw: string): string | undefined {
+  // Slice FIRST, then trim trailing underscores — otherwise truncation in
+  // the middle of a word leaves names like `/superpowers_verification_`.
+  const norm = raw
+    .toLowerCase()
+    .replace(/[-:]/g, "_")
+    .replace(/[^a-z0-9_]/g, "")
+    .slice(0, 32)
+    .replace(/^_+|_+$/g, "");
+  return norm || undefined;
+}
+
+/**
+ * Scan `<root>/skills/*\/SKILL.md` and `<root>/commands/*.md`, parse each
+ * for a description, and add to `out` keyed by Telegram-normalized name.
+ * `namespace` (plugin name) prefixes the command if set.
+ */
+async function readSkillsAt(
+  root: string,
+  namespace: string | undefined,
+  out: Map<string, DiscoveredCommand>,
+): Promise<void> {
+  const skillsDir = resolve(root, "skills");
+  if (existsSync(skillsDir)) {
+    const glob = new Bun.Glob("*/SKILL.md");
+    for await (const rel of glob.scan({ cwd: skillsDir })) {
+      const name = rel.split("/")[0];
+      if (!name) continue;
+      let raw: string;
+      try {
+        raw = await Bun.file(resolve(skillsDir, rel)).text();
+      } catch {
+        continue;
+      }
+      const description = parseFrontmatterDescription(raw);
+      if (!description) continue;
+      const cmd = normalizeCommandName(
+        namespace ? `${namespace}_${name}` : name,
+      );
+      if (!cmd) continue;
+      out.set(cmd, {
+        command: cmd,
+        description: description.slice(0, TELEGRAM_DESC_LIMIT),
+      });
+    }
+  }
+
+  const commandsDir = resolve(root, "commands");
+  if (existsSync(commandsDir)) {
+    const glob = new Bun.Glob("*.md");
+    for await (const rel of glob.scan({ cwd: commandsDir })) {
+      const name = rel.replace(/\.md$/i, "");
+      if (!name) continue;
+      let raw: string;
+      try {
+        raw = await Bun.file(resolve(commandsDir, rel)).text();
+      } catch {
+        continue;
+      }
+      const description = parseFrontmatterDescription(raw);
+      if (!description) continue;
+      const cmd = normalizeCommandName(
+        namespace ? `${namespace}_${name}` : name,
+      );
+      if (!cmd) continue;
+      out.set(cmd, {
+        command: cmd,
+        description: description.slice(0, TELEGRAM_DESC_LIMIT),
+      });
+    }
+  }
+}
+
+/** Telegram's documented 100-command cap is aspirational; in practice
+ * BOT_COMMANDS_TOO_MUCH fires well below that — there's an undocumented
+ * ~4 KB total-payload ceiling. We start optimistic and back off in
+ * `publishBotMenu` if Telegram complains. */
+const TELEGRAM_MAX_BOT_COMMANDS = 30;
+/** Cap descriptions short enough that 30 commands fit under the implicit
+ * payload cap. Still informative for the menu UI. */
+const TELEGRAM_DESC_LIMIT = 100;
+
+/** Skills/commands matching these are CC-internal noise, not things a
+ * user would tap from a phone. Hides the worst clutter. */
+const HIDDEN_PATTERNS = [
+  /^deprecated/i,
+  // CC's plumbing-style skills: code-review, debugging, planning loops, etc.
+  // Useful inside CC, useless from Telegram chat where the work happens
+  // through normal conversation anyway.
+  /^superpowers_/,
+];
+
+async function discoverCommands(): Promise<DiscoveredCommand[]> {
+  const home = process.env.HOME ?? "/";
+  const homeClaudeDir = resolve(home, ".claude");
+  const out = new Map<string, DiscoveredCommand>();
+
+  // User-level skills/commands (no namespace).
+  await readSkillsAt(homeClaudeDir, undefined, out);
+  // This project's .claude/ — skills/commands shipped with the repo.
+  await readSkillsAt(resolve(projectRoot, ".claude"), undefined, out);
+
+  // Each installed plugin: ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/.
+  // We dedup by normalized command name so multiple cached versions of
+  // the same plugin don't multiply entries — last write wins (which
+  // alphabetically is usually the highest version).
+  const pluginCache = resolve(homeClaudeDir, "plugins", "cache");
+  if (existsSync(pluginCache)) {
+    const glob = new Bun.Glob("*/*/*");
+    for await (const rel of glob.scan({
+      cwd: pluginCache,
+      onlyFiles: false,
+    })) {
+      const pluginRoot = resolve(pluginCache, rel);
+      let name = rel.split("/")[1] ?? "";
+      try {
+        const pj = JSON.parse(
+          await Bun.file(
+            resolve(pluginRoot, ".claude-plugin", "plugin.json"),
+          ).text(),
+        ) as { name?: unknown };
+        if (typeof pj.name === "string") name = pj.name;
+      } catch {
+        // fall back to dir name
+      }
+      try {
+        await readSkillsAt(pluginRoot, name, out);
+      } catch (err) {
+        dlog(
+          `skill scan failed for plugin ${name}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+  }
+
+  // Filter, sort, cap.
+  return [...out.values()]
+    .filter(
+      (c) =>
+        !HIDDEN_PATTERNS.some((re) => re.test(c.command)) &&
+        !HIDDEN_PATTERNS.some((re) => re.test(c.description)),
+    )
+    .sort((a, b) => a.command.localeCompare(b.command))
+    .slice(0, TELEGRAM_MAX_BOT_COMMANDS);
+}
+
+async function publishBotMenu(): Promise<void> {
+  let cmds: DiscoveredCommand[];
+  try {
+    cmds = await discoverCommands();
+  } catch (err) {
+    console.error(
+      `[telegram] discovery failed: ${err instanceof Error ? err.message : err}`,
+    );
+    return;
+  }
+  if (cmds.length === 0) {
+    console.error(`[telegram] no skills/commands discovered for bot menu`);
+    return;
+  }
+
+  // Telegram's payload cap isn't documented; back off geometrically on
+  // BOT_COMMANDS_TOO_MUCH so we don't have to hand-tune the cap forever.
+  let attempt = cmds.slice();
+  for (let i = 0; i < 5 && attempt.length > 0; i++) {
+    try {
+      await bot.api.setMyCommands(attempt);
+      console.error(
+        `[telegram] published ${attempt.length}/${cmds.length} command(s) to bot menu: ${attempt
+          .slice(0, 5)
+          .map((c) => `/${c.command}`)
+          .join(" ")}${attempt.length > 5 ? " …" : ""}`,
+      );
+      dlog(`bot menu set with ${attempt.length} commands`);
+      return;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("BOT_COMMANDS_TOO_MUCH") || msg.includes("too long")) {
+        const next = Math.max(1, Math.floor(attempt.length * 0.6));
+        if (next === attempt.length) break;
+        dlog(`menu publish: ${attempt.length} too many, retry with ${next}`);
+        attempt = attempt.slice(0, next);
+        continue;
+      }
+      console.error(`[telegram] failed to publish bot commands menu: ${msg}`);
+      return;
+    }
+  }
+  console.error(
+    `[telegram] gave up publishing bot menu after backoff (had ${cmds.length} candidates)`,
+  );
+}
+
+// -----------------------------------------------------------------------------
 // Boot
 // -----------------------------------------------------------------------------
 
@@ -1216,6 +1437,7 @@ void bot.start({
     console.error(
       `[telegram] bot @${info.username} ready (allowlist size: ${allowAll ? "ALL" : allowedUsers.size})`,
     );
+    void publishBotMenu();
   },
 });
 
