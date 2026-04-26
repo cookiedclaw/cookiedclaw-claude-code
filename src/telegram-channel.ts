@@ -157,9 +157,18 @@ function senderDisplayName(sender: {
   last_name?: string;
   id: number;
 }): string {
-  if (sender.username) return `@${sender.username}`;
-  const full = [sender.first_name, sender.last_name].filter(Boolean).join(" ");
-  return full || String(sender.id);
+  const handle = sender.username ? `@${sender.username}` : undefined;
+  const fullName = [sender.first_name, sender.last_name]
+    .filter(Boolean)
+    .join(" ");
+  // "Tymur Turatbekov (@wowtist247)" if both, otherwise whichever exists,
+  // numeric id only as last resort. Prefix in content + tag attribute
+  // both use this label, so the agent always sees the friendliest form
+  // available.
+  if (fullName && handle) return `${fullName} (${handle})`;
+  if (fullName) return fullName;
+  if (handle) return handle;
+  return String(sender.id);
 }
 
 if (!allowAll && allowedUsers.size === 0) {
