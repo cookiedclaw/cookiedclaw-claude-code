@@ -56,7 +56,7 @@ Then create a **workspace** for your agent — a directory that becomes its home
 
 ```bash
 mkdir -p ~/cookiedclaw && cd ~/cookiedclaw
-claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
+claude --enable-auto-mode --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
 ```
 
 Inside that CC session, run the onboarding wizard:
@@ -64,6 +64,9 @@ Inside that CC session, run the onboarding wizard:
 ```
 /cookiedclaw:setup
 ```
+
+> [!TIP]
+> **`--enable-auto-mode` is strongly recommended for cookiedclaw.** Without it, CC interrupts to ask "are you sure?" before non-trivial tool calls — fine in your terminal, painful when you're driving the agent from Telegram. With auto-mode the agent makes reasonable judgement calls and only pauses for genuinely risky operations (which still hit the permission relay → inline `[✓ Allow] [✗ Deny]` buttons in chat). Most cookiedclaw users want this on by default.
 
 It walks you through:
 
@@ -89,7 +92,8 @@ bun install
 
 # Run from a separate workspace directory so identity files don't land in the repo
 mkdir -p ~/cookied-dev && cd ~/cookied-dev
-claude --plugin-dir ~/projects/bots/cookiedclaw \
+claude --enable-auto-mode \
+       --plugin-dir ~/projects/bots/cookiedclaw \
        --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
 ```
 
@@ -161,7 +165,7 @@ claude plugin marketplace add cookiedclaw/cookiedclaw
 claude plugin install cookiedclaw@cookiedclaw
 mkdir -p ~/cookiedclaw && cd ~/cookiedclaw    # workspace dir
 tmux new -s cookied
-claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
+claude --enable-auto-mode --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
 # Run /cookiedclaw:setup inside CC the first time
 # Ctrl+b d  to detach — session keeps running, you can exit SSH
 ```

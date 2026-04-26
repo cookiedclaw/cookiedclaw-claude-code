@@ -196,7 +196,7 @@ Already written in Step 2. Just confirm `chmod 600` is set.
 
 Summarize what got configured (workspace path, files written). Then:
 
-- Tell them **restart Claude Code from this directory** so the channel server picks up the token: `cd <workspace-path> && claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw`. CC needs to be in this dir for `CLAUDE.md` auto-injection to work.
+- Tell them **restart Claude Code from this directory** so the channel server picks up the token: `cd <workspace-path> && claude --enable-auto-mode --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw`. CC needs to be in this dir for `CLAUDE.md` auto-injection to work. **Strongly recommend `--enable-auto-mode`** — without it CC pauses to ask "are you sure?" before each non-trivial tool, which is fine in a terminal but painful when the user is driving from Telegram. Risky tools still go through the inline-button permission relay, so safety isn't lost.
 - Briefly explain the workspace-file lifecycle:
   - `./CLAUDE.md` → system prompt, auto-loaded by CC every session, edit if you want to tweak agent behavior
   - `./BOOTSTRAP.md` → discovery script, self-deletes after first run
@@ -215,7 +215,7 @@ If you can detect this is a remote / headless setup (e.g. `$SSH_CONNECTION` is s
 For 24/7 runs, wrap CC in tmux so it survives SSH disconnects. From this workspace:
 
   tmux new -s cookied
-  claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
+  claude --enable-auto-mode --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
   # Ctrl+b d to detach — session keeps running
 
 Reattach later with `tmux attach -t cookied`. A server reboot kills the

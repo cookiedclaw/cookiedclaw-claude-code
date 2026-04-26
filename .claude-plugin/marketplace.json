@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "cookiedclaw",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Telegram bridge for Claude Code — DM your CC session, get live tool progress, permission relay, and image dispatch back in chat.",
   "owner": {
     "name": "Timur Turatbekov"
@@ -10,7 +10,7 @@
     {
       "name": "cookiedclaw",
       "description": "Claude Code plugin that turns any Telegram chat into a frontend for your CC session. Live tool progress, MarkdownV2 replies, permission relay with inline buttons, image and file dispatch both ways, pairing flow, persistent identity workspace.",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "source": "./",
       "category": "integration",
       "author": {
