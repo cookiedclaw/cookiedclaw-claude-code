@@ -75,17 +75,38 @@ export function isReplyTool(name: string): boolean {
   return name === "reply" || /^mcp__.+__reply$/.test(name);
 }
 
+/** Telegram message hard limit is 4096; reserve headroom for "(+N more)" line. */
+const TELEGRAM_MSG_LIMIT = 3800;
+
+function formatEventLine(e: ToolEvent): string {
+  const icon =
+    e.status === "running" ? "⏳" : e.status === "done" ? "✓" : "✗";
+  const dur = e.durationMs ? ` (${formatDuration(e.durationMs)})` : "";
+  const errPart = e.errorText ? ` — ${clamp(e.errorText, 80)}` : "";
+  return `${icon} ${e.toolName}: ${e.inputSummary}${dur}${errPart}`;
+}
+
 function renderProgress(events: ToolEvent[]): string {
   if (events.length === 0) return "🔧 working…";
-  return events
-    .map((e) => {
-      const icon =
-        e.status === "running" ? "⏳" : e.status === "done" ? "✓" : "✗";
-      const dur = e.durationMs ? ` (${formatDuration(e.durationMs)})` : "";
-      const errPart = e.errorText ? ` — ${clamp(e.errorText, 80)}` : "";
-      return `${icon} ${e.toolName}: ${e.inputSummary}${dur}${errPart}`;
-    })
-    .join("\n");
+  const lines = events.map(formatEventLine);
+  const full = lines.join("\n");
+  if (full.length <= TELEGRAM_MSG_LIMIT) return full;
+  // Long-running turn: keep the first 3 events as context, then "(+N
+  // earlier hidden)" marker, then as many tail events as fit. Bias to
+  // the tail because that's what's running now. Without this, Telegram
+  // rejects editMessageText on overflow and the user sees a stale
+  // progress message.
+  const head = lines.slice(0, 3);
+  const tail: string[] = [];
+  let used = head.join("\n").length + "\n(+N earlier hidden)\n".length;
+  for (let i = lines.length - 1; i >= 3; i--) {
+    const next = lines[i]!;
+    if (used + next.length + 1 > TELEGRAM_MSG_LIMIT) break;
+    tail.unshift(next);
+    used += next.length + 1;
+  }
+  const hidden = lines.length - head.length - tail.length;
+  return [...head, `(+${hidden} earlier hidden)`, ...tail].join("\n");
 }
 
 /**
@@ -114,6 +135,10 @@ export async function pushProgress(chatId: string): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
     if (!msg.includes("message is not modified")) {
       console.error(`[telegram] progress push failed: ${msg}`);
+      // Also write to the shared progress.log so the user sees Telegram
+      // rejections (rate limit, message-too-long, …) without having to
+      // dig through CC's stderr stream.
+      dlog(`progress push failed: ${msg}`);
     }
   }
 }
@@ -195,6 +220,25 @@ function applyEvent(
       errorText: p.error_text,
     });
   }
+}
+
+/**
+ * Coalesces rapid tool events into a single Telegram edit. Without
+ * this, a turn that fires Read pre/post + Edit pre/post + Bash pre/post
+ * within 200ms produces 6 sequential editMessageText calls — Telegram
+ * rate-limits and silently drops most of them, so the user sees only
+ * the first one and the progress message looks "stuck on Bash".
+ */
+const pushDebounce = new Map<string, ReturnType<typeof setTimeout>>();
+const PUSH_DEBOUNCE_MS = 200;
+
+function schedulePush(chatId: string): void {
+  if (pushDebounce.has(chatId)) return;
+  const timer = setTimeout(() => {
+    pushDebounce.delete(chatId);
+    void queueEdit(chatId, () => pushProgress(chatId));
+  }, PUSH_DEBOUNCE_MS);
+  pushDebounce.set(chatId, timer);
 }
 
 /**
