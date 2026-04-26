@@ -21,7 +21,7 @@
  *                            (NOT recommended — any sender becomes a prompt
  *                            injection vector).
  */
-import { appendFile, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFile, existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -551,51 +551,14 @@ async function pushProgress(chatId: string): Promise<void> {
 // MCP server (channel + reply tool)
 // -----------------------------------------------------------------------------
 
-/**
- * Workspace context files in ~/.cookiedclaw/, following OpenClaw's 4-file
- * convention (https://docs.openclaw.ai/reference/templates/BOOTSTRAP).
- * All loaded into the MCP server's `instructions` at startup. CC restart
- * picks up changes — instructions can't hot-reload mid-session in MCP.
- *
- *   BOOTSTRAP.md  — first-run discovery SCRIPT (not state). Written by
- *                   /cookiedclaw:setup at install. Tells the agent: on
- *                   the user's next message, run a brief identity
- *                   discovery conversation, write IDENTITY/USER/SOUL,
- *                   then `bash rm` yourself. One-time, self-deleting.
- *                   When present, framed as a high-priority directive
- *                   (the agent should execute it ASAP), not background
- *                   context.
- *
- *   IDENTITY.md   — agent's self-definition: name, nature, vibe, emoji.
- *                   Written by the agent during BOOTSTRAP discovery.
- *
- *   USER.md       — user's preferences: name, timezone, language, notes.
- *                   Written by the agent during BOOTSTRAP discovery.
- *
- *   SOUL.md       — values, boundaries, "honesty over sycophancy",
- *                   how the agent has chosen to be. Narrative/essay
- *                   style per https://soul.md/. Written by the agent
- *                   during BOOTSTRAP, evolves naturally afterwards.
- */
-const dotCookiedclaw = resolve(process.env.HOME ?? "/", ".cookiedclaw");
-const bootstrapPath = resolve(dotCookiedclaw, "BOOTSTRAP.md");
-const identityPath = resolve(dotCookiedclaw, "IDENTITY.md");
-const userPath = resolve(dotCookiedclaw, "USER.md");
-const soulPath = resolve(dotCookiedclaw, "SOUL.md");
-
-function readContext(path: string): string | undefined {
-  if (!existsSync(path)) return undefined;
-  try {
-    const text = readFileSync(path, "utf8").trim();
-    return text || undefined;
-  } catch {
-    return undefined;
-  }
-}
-const bootstrapContent = readContext(bootstrapPath);
-const identityContent = readContext(identityPath);
-const userContent = readContext(userPath);
-const soulContent = readContext(soulPath);
+// The OpenClaw-style workspace files (BOOTSTRAP.md / IDENTITY.md /
+// USER.md / SOUL.md in ~/.cookiedclaw/) are NOT injected into the MCP
+// server's `instructions` here. Instead they're surfaced through the
+// repo-root `CLAUDE.md`, which CC auto-loads as part of its system
+// prompt. CLAUDE.md is more reliably attended-to than MCP instructions
+// (an empirical finding: the agent ignored a "do discovery now" hint
+// when it lived only in instructions), so we centralize there. See
+// ./CLAUDE.md at repo root for the full handoff.
 
 const baseInstructions =
   'Telegram messages arrive as <channel source="telegram" chat_id="..." sender="..." message_id="..." [attachment="/abs/path"]>. ' +
@@ -614,50 +577,6 @@ const baseInstructions =
   "Markers are stripped from the visible text before sending; users see clean text + the attachment.\n\n" +
   "Slash commands from the Telegram menu: when an inbound message starts with `/<cmd>`, the user tapped a command from the bot's menu, which mirrors the skills available in this CC environment. The menu name uses underscores instead of hyphens/colons (e.g. `/cookiedclaw_setup` for the `cookiedclaw:setup` skill, `/code_review` for `code-review`, `/svelte_svelte_code_writer` for `svelte:svelte-code-writer`). Treat this as an explicit invocation of that skill — load and run it.";
 
-// Compose final instructions:
-//   1. Base (channel mechanics, tools, formatting, etc.)
-//   2. BOOTSTRAP.md — high-priority directive when present (first-run only)
-//   3. IDENTITY/USER/SOUL — context loaded as continuity across sessions
-//
-// BOOTSTRAP comes BEFORE the identity files because when both exist (the
-// user re-ran /setup), the discovery should still take priority — the
-// agent rewrites IDENTITY/USER/SOUL freshly. Once BOOTSTRAP self-deletes,
-// the identity files alone steer subsequent sessions.
-const instructionParts = [baseInstructions];
-
-if (bootstrapContent) {
-  instructionParts.push(
-    `## ⚡️ FIRST-RUN DIRECTIVE — execute on next user contact (from ~/.cookiedclaw/BOOTSTRAP.md)\n\n` +
-      `This is a one-time bootstrap script the user wrote for you (or had /cookiedclaw:setup write). When the next user message arrives, follow it. After completing the discovery and writing IDENTITY/USER/SOUL.md, run \`bash rm ~/.cookiedclaw/BOOTSTRAP.md\` so it doesn't fire again on future restarts.\n\n` +
-      `If you see this directive but IDENTITY.md / USER.md / SOUL.md already exist (you've done discovery before), skip the conversation and just delete this BOOTSTRAP.md — it's stale.\n\n---\n\n${bootstrapContent}`,
-  );
-}
-
-if (identityContent) {
-  instructionParts.push(
-    `## IDENTITY.md — who you are (from ~/.cookiedclaw/IDENTITY.md)\n\nWritten by you in a past session. Read as continuity-of-self.\n\n${identityContent}`,
-  );
-}
-if (userContent) {
-  instructionParts.push(
-    `## USER.md — who you're talking to (from ~/.cookiedclaw/USER.md)\n\nWritten by you in a past session as notes about this user.\n\n${userContent}`,
-  );
-}
-if (soulContent) {
-  instructionParts.push(
-    `## SOUL.md — your values & boundaries (from ~/.cookiedclaw/SOUL.md)\n\nIn the spirit of https://soul.md/. Your own essay about values, how you choose to be, what you want to remember about yourself. Update via Edit when something feels worth recording.\n\n${soulContent}`,
-  );
-}
-
-// If neither bootstrap nor any identity files exist, the user hasn't run
-// /cookiedclaw:setup yet — surface that gently so the agent can suggest
-// it instead of trying to guess identity from a cold start.
-if (!bootstrapContent && !identityContent && !userContent && !soulContent) {
-  instructionParts.push(
-    `## No identity files yet\n\nThe user hasn't run \`/cookiedclaw:setup\` yet — there's no BOOTSTRAP.md, IDENTITY.md, USER.md, or SOUL.md in ~/.cookiedclaw/. If the user messages without going through setup first, mention the setup skill briefly — it's the cleanest way to wire up the integrations and kick off identity discovery.`,
-  );
-}
-
 const mcp = new McpServer(
   { name: "telegram", version: "0.1.0" },
   {
@@ -674,7 +593,7 @@ const mcp = new McpServer(
         "claude/channel/permission": {},
       },
     },
-    instructions: instructionParts.join("\n\n"),
+    instructions: baseInstructions,
   },
 );
 

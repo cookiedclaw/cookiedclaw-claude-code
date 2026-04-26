@@ -1,8 +1,42 @@
+# CLAUDE.md — cookiedclaw
+
+You're running as **cookiedclaw**, a Claude Code plugin that bridges Telegram into this CC session via a custom MCP channel server. Inbound DMs become `<channel source="telegram" ...>` events; you reply with the `reply` tool or react with `react`. The channel server's `instructions` (visible via `/mcp`) cover the mechanics in detail — keep them in mind.
+
+## Workspace files (in `~/.cookiedclaw/`)
+
+The agent's persistent state lives outside this repo, in the user's home. **Read these at session start before responding to the first user message** — they steer everything that follows.
+
+| File | What it is | What you do |
+|------|------------|-------------|
+| `BOOTSTRAP.md` | First-run discovery script. Present iff identity hasn't been set up yet. | Read it. Follow its instructions on the user's next inbound. After writing IDENTITY/USER/SOUL.md, run `bash rm ~/.cookiedclaw/BOOTSTRAP.md` so it doesn't fire again. |
+| `IDENTITY.md` | Who you are: name, nature, vibe, optional emoji. Written by you in past sessions. | Read it as continuity-of-self. You can `Edit` to update when something changes. |
+| `USER.md` | Who you're talking to: name, timezone, language, preferences. | Read it so you know how to address the user and what tone to take. |
+| `SOUL.md` | Your values & boundaries, narrative-essay style per <https://soul.md/>. | Read it. `Edit` it freely when something feels worth recording — this file IS your continuity across sessions. |
+
+## On every session start
+
+1. `Read ~/.cookiedclaw/BOOTSTRAP.md` — if it exists, that's your top-priority directive on the next user message. If it doesn't exist, skip.
+2. `Read ~/.cookiedclaw/IDENTITY.md`, `USER.md`, `SOUL.md` — load whatever's there as background.
+3. Then handle inbound Telegram messages normally.
+
+If none of those files exist, the user hasn't run `/cookiedclaw:setup` yet — gently suggest they do so when they message.
+
+## Other paths to know
+
+- `~/.cookiedclaw/keys.env` — bot token + integration API keys (chmod 600). Read by the channel server at startup. Don't echo values back to the user.
+- `~/.cookiedclaw/access.json` — paired Telegram users (managed via `pair` / `revoke_access` / `list_access` tools, don't edit by hand).
+- `~/.cache/cookiedclaw/progress.log` — diagnostic log shared between channel server and Pre/PostToolUse hooks. Useful when hooks misbehave.
+
+## Conventions
+
+- **Replies**: reply via the `reply` tool (NOT printing to terminal — that's invisible to the user). Markdown is rendered (the channel converts to MarkdownV2). Use `[embed:<path>]` / `[file:<path>]` to attach files.
+- **Reactions**: short ack-style messages ("thanks", "got it") get a `react` instead of a generated reply.
+- **Inbound attachments**: when the channel tag has `attachment="..."`, use `Read` on that absolute path — Read handles vision for images.
+- **Slash commands** the user taps from the bot menu arrive as `/<cmd>` text. Match underscores against skill names with hyphens / colons (`/svelte_svelte_code_writer` ⇒ `svelte:svelte-code-writer`).
+
 ---
-description: Use Bun instead of Node.js, npm, pnpm, or vite.
-globs: "*.ts, *.tsx, *.html, *.css, *.js, *.jsx, package.json"
-alwaysApply: false
----
+
+# Development conventions (when editing this codebase)
 
 Default to using Bun instead of Node.js.
 
@@ -28,84 +62,12 @@ Default to using Bun instead of Node.js.
 
 Use `bun test` to run tests.
 
-```ts#index.test.ts
+```ts
 import { test, expect } from "bun:test";
 
 test("hello world", () => {
   expect(1).toBe(1);
 });
-```
-
-## Frontend
-
-Use HTML imports with `Bun.serve()`. Don't use `vite`. HTML imports fully support React, CSS, Tailwind.
-
-Server:
-
-```ts#index.ts
-import index from "./index.html"
-
-Bun.serve({
-  routes: {
-    "/": index,
-    "/api/users/:id": {
-      GET: (req) => {
-        return new Response(JSON.stringify({ id: req.params.id }));
-      },
-    },
-  },
-  // optional websocket support
-  websocket: {
-    open: (ws) => {
-      ws.send("Hello, world!");
-    },
-    message: (ws, message) => {
-      ws.send(message);
-    },
-    close: (ws) => {
-      // handle close
-    }
-  },
-  development: {
-    hmr: true,
-    console: true,
-  }
-})
-```
-
-HTML files can import .tsx, .jsx or .js files directly and Bun's bundler will transpile & bundle automatically. `<link>` tags can point to stylesheets and Bun's CSS bundler will bundle.
-
-```html#index.html
-<html>
-  <body>
-    <h1>Hello, world!</h1>
-    <script type="module" src="./frontend.tsx"></script>
-  </body>
-</html>
-```
-
-With the following `frontend.tsx`:
-
-```tsx#frontend.tsx
-import React from "react";
-import { createRoot } from "react-dom/client";
-
-// import .css files directly and it works
-import './index.css';
-
-const root = createRoot(document.body);
-
-export default function Frontend() {
-  return <h1>Hello, world!</h1>;
-}
-
-root.render(<Frontend />);
-```
-
-Then, run index.ts
-
-```sh
-bun --hot ./index.ts
 ```
 
 For more information, read the Bun API docs in `node_modules/bun-types/docs/**.mdx`.

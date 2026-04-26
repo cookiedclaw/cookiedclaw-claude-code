@@ -201,10 +201,12 @@ If a previous BOOTSTRAP.md exists, overwrite — this run of /setup is the new s
 
 Summarize what got configured in one short list. Then:
 
-- If they configured the Telegram token in this session: tell them **restart Claude Code now** so the channel server picks up the token and BOOTSTRAP.md becomes active. The agent's first reply to their next Telegram message will kick off the identity discovery.
+- If they configured the Telegram token in this session: tell them **restart Claude Code now** so the channel server picks up the token. The repo's top-level `CLAUDE.md` (auto-loaded by CC at startup) tells the agent to read `~/.cookiedclaw/BOOTSTRAP.md` on the user's next Telegram message — that's how the identity discovery actually fires. **CC must be launched from the cookiedclaw repo dir** for CLAUDE.md to be picked up; if they normally run from elsewhere, mention this.
 - If only optional integrations got added (no token change): same restart instruction, but for the new MCP servers / plugins.
 - Mention `~/.cookiedclaw/keys.env` is where keys live (chmod 600). Editing it rotates keys.
-- Briefly explain the workspace files: BOOTSTRAP.md self-deletes after first run; IDENTITY/USER/SOUL.md persist and steer every future session. They can edit those files directly any time — the bot will pick up changes on next CC restart.
+- Briefly explain the workspace-file lifecycle:
+  - `~/.cookiedclaw/BOOTSTRAP.md` → discovery script, self-deletes after first run
+  - `~/.cookiedclaw/{IDENTITY,USER,SOUL}.md` → continuity-of-self files, persist forever, edit any time (CC picks up changes on restart)
 - If they configured nothing (just looked around): say so cheerfully. `/cookiedclaw:setup` is always there.
 
 ## Don'ts
