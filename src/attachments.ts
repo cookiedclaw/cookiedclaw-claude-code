@@ -14,7 +14,7 @@
  *   - downloadTelegramFile : pull a file_id down to ./.cookiedclaw/inbox/
  */
 import { resolve } from "node:path";
-import { InputFile } from "grammy";
+import { InputFile, type InlineKeyboard } from "grammy";
 import { bot } from "./bot.ts";
 import { token } from "./env.ts";
 import { sendFormatted, toTelegramMd } from "./format.ts";
@@ -121,6 +121,7 @@ export async function sendReply(
   chatId: number,
   text: string,
   embeds: Embed[],
+  replyMarkup?: InlineKeyboard,
 ): Promise<void> {
   // Fast path: single embed + caption-able text → combined.
   if (embeds.length === 1 && text.length <= TELEGRAM_CAPTION_LIMIT) {
@@ -129,10 +130,12 @@ export async function sendReply(
       const { file, isImage } = await resolveEmbed(embed.source);
       const sendAsPhoto = embed.kind === "auto" && isImage;
       const caption = text ? toTelegramMd(text) : undefined;
-      const opts =
-        caption !== undefined
-          ? { caption, parse_mode: "MarkdownV2" as const }
-          : undefined;
+      const opts: Record<string, unknown> = {};
+      if (caption !== undefined) {
+        opts.caption = caption;
+        opts.parse_mode = "MarkdownV2";
+      }
+      if (replyMarkup) opts.reply_markup = replyMarkup;
       if (sendAsPhoto) await bot.api.sendPhoto(chatId, file, opts);
       else await bot.api.sendDocument(chatId, file, opts);
       return;
@@ -144,15 +147,21 @@ export async function sendReply(
     }
   }
 
-  if (text) await sendFormatted(chatId, text);
+  if (text) await sendFormatted(chatId, text, replyMarkup);
 
   for (const embed of embeds) {
     try {
       const { file, isImage } = await resolveEmbed(embed.source);
+      // If we're in the split path and there's no text, attach the
+      // keyboard to the LAST embed so it's still tappable.
+      const opts =
+        !text && embed === embeds[embeds.length - 1] && replyMarkup
+          ? { reply_markup: replyMarkup }
+          : undefined;
       if (embed.kind === "auto" && isImage) {
-        await bot.api.sendPhoto(chatId, file);
+        await bot.api.sendPhoto(chatId, file, opts);
       } else {
-        await bot.api.sendDocument(chatId, file);
+        await bot.api.sendDocument(chatId, file, opts);
       }
     } catch (err) {
       // Internal failure — log for our own debugging but DON'T pollute

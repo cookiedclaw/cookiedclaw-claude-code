@@ -3,6 +3,7 @@
  * list_access. Imported and called once from telegram-channel.ts; lives
  * here to keep the entry point lean.
  */
+import { InlineKeyboard } from "grammy";
 import { z } from "zod";
 import {
   pairedUsers,
@@ -15,6 +16,36 @@ import { bot } from "./bot.ts";
 import { allowAll, allowedUsers } from "./env.ts";
 import { sendFormatted } from "./format.ts";
 import { mcp } from "./mcp.ts";
+
+/**
+ * Build an InlineKeyboard from the agent-supplied row/button matrix.
+ * Wraps callback `data` strings with our `cb:` prefix so the regex
+ * handler in this module knows to forward them to CC. URL buttons pass
+ * through unchanged.
+ */
+function buildInlineKeyboard(
+  rows:
+    | Array<Array<{ text: string; url?: string; data?: string }>>
+    | undefined,
+): InlineKeyboard | undefined {
+  if (!rows || rows.length === 0) return undefined;
+  const kb = new InlineKeyboard();
+  for (const row of rows) {
+    for (const btn of row) {
+      if (btn.url) {
+        kb.url(btn.text, btn.url);
+      } else if (btn.data) {
+        // Prefix so we can disambiguate from the permission-relay
+        // callbacks (which use `perm_allow:` / `perm_deny:`).
+        kb.text(btn.text, `cb:${btn.data}`);
+      }
+      // Buttons without url or data are silently dropped — z's optional
+      // can't enforce "exactly one" on its own.
+    }
+    kb.row();
+  }
+  return kb;
+}
 
 // -----------------------------------------------------------------------------
 // reply
@@ -35,9 +66,35 @@ mcp.registerTool(
           "Reply body. Write standard CommonMark Markdown freely — bold (**…**), italic (*…*), inline `code`, ```code blocks```, [links](url), bullet lists, etc. The channel converts to Telegram MarkdownV2 and handles escaping. Tables aren't rendered by Telegram; use bullet lists instead.\n\n" +
             "To attach files inline, include `[embed:<path-or-url>]` (auto: photo for images, document for other files) or `[file:<path-or-url>]` (always document, no compression). The markers are extracted from the visible text before sending. Examples: 'Here's the chart: [embed:./chart.png]' or 'Original: [file:/tmp/photo.png]'.",
         ),
+      buttons: z
+        .array(
+          z.array(
+            z.object({
+              text: z.string().describe("Button label shown to the user."),
+              url: z
+                .string()
+                .url()
+                .optional()
+                .describe(
+                  "If set, tapping the button opens this URL. Mutually exclusive with `data`.",
+                ),
+              data: z
+                .string()
+                .max(60)
+                .optional()
+                .describe(
+                  "If set, tapping the button forwards this opaque string back to the agent as a `<channel>` event with `meta.callback_data`. Use this to build interactive flows (approve/deny, multi-choice menus, pagination). Max 60 chars (Telegram's callback_data limit is 64 with 4 reserved for our prefix). Mutually exclusive with `url`.",
+                ),
+            }),
+          ),
+        )
+        .optional()
+        .describe(
+          "Optional inline keyboard. Outer array = rows; inner = buttons in each row. Each button needs either `url` (opens link) or `data` (sends a callback to the agent). When the user taps a `data` button, you'll receive a new <channel> event with `meta.callback_data` set; respond to that turn normally with `reply` or `react`.",
+        ),
     },
   },
-  async ({ chat_id, text }) => {
+  async ({ chat_id, text, buttons }) => {
     // Just send the bubble. Typing, progress message, and pendingChats
     // cleanup are owned by the Stop hook now — that's the authoritative
     // "agent is done" signal. If the agent calls reply mid-turn (e.g. an
@@ -46,7 +103,8 @@ mcp.registerTool(
     // tear state down here.
     try {
       const { embeds, cleaned } = extractEmbeds(text);
-      await sendReply(Number(chat_id), cleaned, embeds);
+      const replyMarkup = buildInlineKeyboard(buttons);
+      await sendReply(Number(chat_id), cleaned, embeds, replyMarkup);
       const note =
         embeds.length > 0
           ? `sent (text + ${embeds.length} attachment${embeds.length === 1 ? "" : "s"})`

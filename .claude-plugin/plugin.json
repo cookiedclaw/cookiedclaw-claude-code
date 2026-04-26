@@ -1,7 +1,7 @@
 {
   "name": "cookiedclaw",
   "description": "Telegram bridge for Claude Code. DM your bot, the agent runs in your CC session, replies land back in chat with live tool progress, permission relay, and image dispatch both ways.",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "author": {
     "name": "Timur Turatbekov"
   }

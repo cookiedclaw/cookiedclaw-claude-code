@@ -3,6 +3,7 @@
  * and sender-display-name composition.
  */
 import telegramifyMarkdown from "telegramify-markdown";
+import type { InlineKeyboard } from "grammy";
 import { bot } from "./bot.ts";
 
 /**
@@ -30,17 +31,23 @@ export function toTelegramMd(text: string): string {
 export async function sendFormatted(
   chatId: number,
   text: string,
+  replyMarkup?: InlineKeyboard,
 ): Promise<void> {
   const md = toTelegramMd(text);
+  const opts: Record<string, unknown> = { parse_mode: "MarkdownV2" };
+  if (replyMarkup) opts.reply_markup = replyMarkup;
   try {
-    await bot.api.sendMessage(chatId, md, { parse_mode: "MarkdownV2" });
+    await bot.api.sendMessage(chatId, md, opts);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (/can't parse|markdown|entities/i.test(msg)) {
       console.error(
         `[telegram] markdown parse error, retrying plain: ${msg}`,
       );
-      await bot.api.sendMessage(chatId, text);
+      const plainOpts = replyMarkup
+        ? { reply_markup: replyMarkup }
+        : undefined;
+      await bot.api.sendMessage(chatId, text, plainOpts);
     } else {
       throw err;
     }

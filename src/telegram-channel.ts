@@ -54,6 +54,14 @@ if (hasToken) {
   console.error("[telegram] starting bot polling...");
   void bot.start({
     drop_pending_updates: true,
+    // Telegram only delivers reactions / inline-keyboard callbacks if we
+    // explicitly subscribe. The default getUpdates set excludes them.
+    allowed_updates: [
+      "message",
+      "edited_message",
+      "callback_query",
+      "message_reaction",
+    ],
     onStart: (info) => {
       console.error(
         `[telegram] bot @${info.username} ready (allowlist size: ${allowAll ? "ALL" : allowedUsers.size})`,

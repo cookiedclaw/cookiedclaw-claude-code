@@ -44,6 +44,7 @@ async function forwardToCC(
   messageId: number,
   content: string,
   attachmentPath?: string,
+  extraMeta?: Record<string, string>,
 ): Promise<void> {
   setActiveChatId(chatId);
   pendingChats.add(chatId);
@@ -81,6 +82,7 @@ async function forwardToCC(
     message_id: String(messageId),
   };
   if (attachmentPath) meta.attachment = attachmentPath;
+  if (extraMeta) Object.assign(meta, extraMeta);
   // Prefix the content with [<sender>]: so the agent reliably knows
   // who's talking. The sender is also in meta, but inline prefixes are
   // harder to overlook than tag attributes — and they matter when
@@ -210,6 +212,69 @@ async function handleStopCommand(
   }
 }
 
+/**
+ * Pull a friendly origin label off a forwarded Telegram message. Returns
+ * undefined if the message wasn't forwarded.
+ */
+function describeForward(message: {
+  forward_origin?: {
+    type: string;
+    sender_user?: { first_name?: string; last_name?: string; username?: string };
+    sender_user_name?: string;
+    sender_chat?: { title?: string; username?: string };
+    chat?: { title?: string; username?: string };
+    author_signature?: string;
+  };
+}): { label: string; meta: Record<string, string> } | undefined {
+  const o = message.forward_origin;
+  if (!o) return undefined;
+  switch (o.type) {
+    case "user": {
+      const u = o.sender_user;
+      if (!u) return { label: "(forwarded)", meta: { forward_type: "user" } };
+      const parts = [u.first_name, u.last_name].filter(Boolean).join(" ");
+      const handle = u.username ? `@${u.username}` : "";
+      const name = parts && handle ? `${parts} (${handle})` : parts || handle || "user";
+      return {
+        label: `forwarded from ${name}`,
+        meta: {
+          forward_type: "user",
+          forward_from: name,
+        },
+      };
+    }
+    case "hidden_user":
+      return {
+        label: `forwarded from ${o.sender_user_name ?? "user"}`,
+        meta: {
+          forward_type: "hidden_user",
+          forward_from: o.sender_user_name ?? "",
+        },
+      };
+    case "chat": {
+      const t = o.sender_chat?.title ?? o.sender_chat?.username ?? "group";
+      return {
+        label: `forwarded from group ${t}`,
+        meta: { forward_type: "chat", forward_from: t },
+      };
+    }
+    case "channel": {
+      const t = o.chat?.title ?? o.chat?.username ?? "channel";
+      const sig = o.author_signature ? ` by ${o.author_signature}` : "";
+      return {
+        label: `forwarded from channel ${t}${sig}`,
+        meta: {
+          forward_type: "channel",
+          forward_from: t,
+          ...(o.author_signature ? { forward_author: o.author_signature } : {}),
+        },
+      };
+    }
+    default:
+      return { label: "(forwarded)", meta: { forward_type: o.type } };
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Bot handler registrations
 // -----------------------------------------------------------------------------
@@ -242,12 +307,15 @@ bot.on("message:text", async (ctx) => {
     );
     return;
   }
+  const fwd = describeForward(ctx.message);
   await forwardToCC(
     String(ctx.chat.id),
     gated.senderId,
     gated.senderLabel,
     ctx.message.message_id,
-    ctx.message.text,
+    fwd ? `[${fwd.label}] ${ctx.message.text}` : ctx.message.text,
+    undefined,
+    fwd?.meta,
   );
 });
 
@@ -271,13 +339,18 @@ bot.on("message:photo", async (ctx) => {
       `[telegram] photo download failed: ${err instanceof Error ? err.message : err}`,
     );
   }
+  const fwdPhoto = describeForward(ctx.message);
+  const photoCaption = ctx.message.caption ?? "";
   await forwardToCC(
     String(ctx.chat.id),
     gated.senderId,
     gated.senderLabel,
     ctx.message.message_id,
-    ctx.message.caption ?? "",
+    fwdPhoto
+      ? `[${fwdPhoto.label}]${photoCaption ? ` ${photoCaption}` : ""}`
+      : photoCaption,
     attachmentPath,
+    fwdPhoto?.meta,
   );
 });
 
@@ -296,12 +369,108 @@ bot.on("message:document", async (ctx) => {
       `[telegram] document download failed: ${err instanceof Error ? err.message : err}`,
     );
   }
+  const fwdDoc = describeForward(ctx.message);
+  const docCaption = ctx.message.caption ?? "";
   await forwardToCC(
     String(ctx.chat.id),
     gated.senderId,
     gated.senderLabel,
     ctx.message.message_id,
-    ctx.message.caption ?? "",
+    fwdDoc ? `[${fwdDoc.label}]${docCaption ? ` ${docCaption}` : ""}` : docCaption,
     attachmentPath,
+    fwdDoc?.meta,
+  );
+});
+
+/**
+ * User reacted to a message with an emoji. We forward this to CC as a
+ * channel notification so the agent can ack ("oh, they 👍'd my reply"
+ * → maybe react back with 🙏, or use it as feedback signal). Requires
+ * `message_reaction` in `allowed_updates` (set in telegram-channel.ts).
+ *
+ * In private chats reactions only fire for the bot if `disable_notification`
+ * isn't set on the source message — Telegram hides reactions on muted
+ * messages. That's a Telegram quirk we don't try to work around.
+ */
+/**
+ * Inline-button taps from buttons the agent attached to a previous
+ * reply via the `reply` tool's `buttons` parameter. Tapping forwards
+ * the agent-supplied `data` payload back as a `<channel>` notification
+ * with `meta.callback_data` and `meta.is_callback="true"`. The agent
+ * decides what to do (typically reply / react / start a task).
+ *
+ * URL buttons don't hit this — Telegram opens the link directly.
+ */
+bot.callbackQuery(/^cb:(.+)$/, async (ctx) => {
+  if (!ctx.from || !isAllowed(ctx.from.id)) {
+    await ctx.answerCallbackQuery({
+      text: "Access denied — your account isn't paired.",
+      show_alert: true,
+    });
+    return;
+  }
+  const data = ctx.match[1]!;
+  const senderId = String(ctx.from.id);
+  const senderLabel = senderDisplayName(ctx.from);
+  const chatId = ctx.callbackQuery.message?.chat.id;
+  const messageId = ctx.callbackQuery.message?.message_id;
+  if (!chatId || !messageId) {
+    await ctx.answerCallbackQuery({ text: "Stale button (no chat/msg)." });
+    return;
+  }
+  // Acknowledge fast so Telegram dismisses the loading spinner. We
+  // don't show alert text — the agent's reply is the user-visible ack.
+  await ctx.answerCallbackQuery();
+  await forwardToCC(
+    String(chatId),
+    senderId,
+    senderLabel,
+    messageId,
+    `(tapped: ${data})`,
+    undefined,
+    {
+      callback_data: data,
+      is_callback: "true",
+    },
+  );
+});
+
+bot.on("message_reaction", async (ctx) => {
+  const update = ctx.messageReaction;
+  if (!update) return;
+  // We only care about reactions made BY users, not by the bot itself.
+  // Bot-reactions echo back as message_reaction updates with our bot's
+  // user id; ignore them.
+  const sender = update.user;
+  if (!sender) return;
+  const gated = await gateInbound({
+    from: sender,
+    chat: { id: Number(update.chat.id) },
+  });
+  if (!gated.ok) return;
+  const emojiOf = (r: { type: string; emoji?: string }): string | undefined =>
+    r.type === "emoji" ? r.emoji : undefined;
+  const newReactions = update.new_reaction
+    .map(emojiOf)
+    .filter((e): e is string => Boolean(e));
+  const oldReactions = update.old_reaction
+    .map(emojiOf)
+    .filter((e): e is string => Boolean(e));
+  // Only signal added reactions (the typical case). Removals get
+  // squelched — the agent rarely cares "user retracted their 👍".
+  const added = newReactions.filter((e) => !oldReactions.includes(e));
+  if (added.length === 0) return;
+  const emoji = added.join(" ");
+  await forwardToCC(
+    String(update.chat.id),
+    gated.senderId,
+    gated.senderLabel,
+    update.message_id,
+    `(reacted ${emoji})`,
+    undefined,
+    {
+      reaction_emoji: emoji,
+      is_reaction: "true",
+    },
   );
 });
