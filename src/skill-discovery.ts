@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import matter from "gray-matter";
 import { bot } from "./bot.ts";
-import { dlog, projectRoot } from "./paths.ts";
+import { dlog, workspaceRoot } from "./paths.ts";
 
 type DiscoveredCommand = { command: string; description: string };
 
@@ -172,8 +172,9 @@ async function discoverCommands(): Promise<DiscoveredCommand[]> {
 
   // User-level skills/commands (no namespace).
   await readSkillsAt(homeClaudeDir, undefined, out);
-  // This project's .claude/ — skills/commands shipped with the repo.
-  await readSkillsAt(resolve(projectRoot, ".claude"), undefined, out);
+  // Workspace-local .claude/ — anything the user dropped into this agent's
+  // workspace. Useful for per-agent custom commands.
+  await readSkillsAt(resolve(workspaceRoot, ".claude"), undefined, out);
 
   // Plugins: ask CC directly — it knows which version is active and
   // which are enabled. Plugin id is "<name>@<marketplace>"; namespace

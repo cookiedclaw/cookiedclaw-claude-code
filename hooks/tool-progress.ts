@@ -7,18 +7,17 @@
  * CC spawns this fresh per tool call, pipes the event JSON on stdin, and
  * looks at exit code 0 / non-zero (we never block — exit 0 always). The
  * channel server picked a free port at startup and wrote it to
- *   $CLAUDE_PLUGIN_DATA/progress.port  (or ~/.cache/cookiedclaw/progress.port
- *   under dev mode, where CLAUDE_PLUGIN_DATA isn't set).
+ *   ./.cookiedclaw/cache/progress.port  (relative to CC's CWD = the
+ *   user's workspace).
  *
  * Invocation: `bun .../hooks/tool-progress.ts pre|post`
  */
 import { appendFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-// Same path as the channel server. We deliberately don't use
-// CLAUDE_PLUGIN_DATA — CC's hook env and MCP-server env aren't guaranteed
-// equal, and a fixed path sidesteps that mismatch.
-const dataDir = resolve(process.env.HOME ?? "/tmp", ".cache", "cookiedclaw");
+// Hook subprocess inherits CC's CWD = the workspace root. The channel
+// server uses the same relative path, so port + log files line up.
+const dataDir = resolve(process.cwd(), ".cookiedclaw", "cache");
 const portFile = resolve(dataDir, "progress.port");
 const debugLog = resolve(dataDir, "progress.log");
 

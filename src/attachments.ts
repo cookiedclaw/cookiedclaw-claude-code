@@ -11,14 +11,14 @@
  *                      otherwise text first then attachments in order)
  *
  * Inbound — Telegram → local file:
- *   - downloadTelegramFile : pull a file_id down to ~/.cache/cookiedclaw/inbox/
+ *   - downloadTelegramFile : pull a file_id down to ./.cookiedclaw/inbox/
  */
 import { resolve } from "node:path";
 import { InputFile } from "grammy";
 import { bot } from "./bot.ts";
 import { token } from "./env.ts";
 import { sendFormatted, toTelegramMd } from "./format.ts";
-import { dlog, inboxDir, projectRoot } from "./paths.ts";
+import { dlog, inboxDir, workspaceRoot } from "./paths.ts";
 
 export type Embed = { kind: "auto" | "file"; source: string };
 
@@ -95,7 +95,7 @@ async function resolveEmbed(
       sizeBytes: bytes.byteLength,
     };
   }
-  const abs = source.startsWith("/") ? source : resolve(projectRoot, source);
+  const abs = source.startsWith("/") ? source : resolve(workspaceRoot, source);
   const file = Bun.file(abs);
   if (!(await file.exists())) throw new Error(`file not found: ${abs}`);
   return {
@@ -168,7 +168,7 @@ export async function sendReply(
 }
 
 /**
- * Pull a Telegram-hosted file down to ~/.cache/cookiedclaw/inbox/. CC's
+ * Pull a Telegram-hosted file down to ./.cookiedclaw/inbox/. CC's
  * Read tool then has a normal local path it can vision-process (for
  * images) or read text from (for everything else). Filenames are
  * timestamp-prefixed so a chatty user sending many files doesn't collide.

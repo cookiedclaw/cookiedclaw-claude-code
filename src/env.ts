@@ -1,36 +1,29 @@
 /**
- * Loads `.env`-style files into `process.env` at module-init time, then
- * surfaces the cookiedclaw-relevant values as named exports for the rest
- * of the codebase.
+ * Loads the workspace's `.cookiedclaw/keys.env` into `process.env` at
+ * module-init, then surfaces cookiedclaw-relevant values as named exports.
  *
- * Two sources, in priority order:
- *   1. `~/.cookiedclaw/keys.env` — where /cookiedclaw:setup writes
- *      everything. Survives plugin upgrades and works regardless of cwd.
- *   2. The plugin project's own `.env` — legacy / dev-mode source.
- *
- * Shell env wins over both because we only set keys that aren't already
- * in process.env.
+ * Shell env wins — we only set keys that aren't already in process.env.
+ * That lets you override a workspace's saved key with `KEY=… claude …`
+ * without editing the file.
  */
 import { resolve } from "node:path";
-import { dotCookiedclaw, projectRoot } from "./paths.ts";
+import { dotCookiedclaw } from "./paths.ts";
 
-const envPaths = [
-  resolve(dotCookiedclaw, "keys.env"),
-  resolve(projectRoot, ".env"),
-];
+const envPath = resolve(dotCookiedclaw, "keys.env");
 
-for (const envPath of envPaths) {
+{
   const file = Bun.file(envPath);
-  if (!(await file.exists())) continue;
-  const text = await file.text();
-  for (const line of text.split("\n")) {
-    const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/i);
-    if (!m) continue;
-    const [, key, rawValue] = m as unknown as [string, string, string];
-    if (process.env[key]) continue;
-    process.env[key] = rawValue.replace(/^['"]|['"]$/g, "");
+  if (await file.exists()) {
+    const text = await file.text();
+    for (const line of text.split("\n")) {
+      const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/i);
+      if (!m) continue;
+      const [, key, rawValue] = m as unknown as [string, string, string];
+      if (process.env[key]) continue;
+      process.env[key] = rawValue.replace(/^['"]|['"]$/g, "");
+    }
+    console.error(`[telegram] loaded env from ${envPath}`);
   }
-  console.error(`[telegram] loaded env from ${envPath}`);
 }
 
 /**
@@ -52,7 +45,7 @@ if (!hasToken) {
   // polling, but keep the MCP server up so its tools and the setup
   // skill stay available.
   console.error(
-    `[telegram] no Telegram bot token yet — bot polling disabled.\n` +
+    `[telegram] no Telegram bot token in ${envPath} — bot polling disabled.\n` +
       `  Run /cookiedclaw:setup in Claude Code to configure one,\n` +
       `  then restart claude. MCP tools (pair, list_access, …) and the\n` +
       `  setup skill stay available in the meantime.`,

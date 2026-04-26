@@ -1,44 +1,39 @@
-# CLAUDE.md — cookiedclaw
+# CLAUDE.md — cookiedclaw repo (developer notes)
 
-You're running as **cookiedclaw**, a Claude Code plugin that bridges Telegram into this CC session via a custom MCP channel server. Inbound DMs become `<channel source="telegram" ...>` events; you reply with the `reply` tool or react with `react`. The channel server's `instructions` (visible via `/mcp`) cover the mechanics in detail — keep them in mind.
+This is the **plugin source repo**, not a runtime workspace. If you're a user looking for "who am I as the agent", that lives in **your** workspace's `CLAUDE.md` — written by `/cookiedclaw:setup` into the directory you ran it from.
 
-## Workspace files (in `~/.cookiedclaw/`)
+This file is for hacking on cookiedclaw itself.
 
-The agent's persistent state lives outside this repo, in the user's home. **Read these at session start before responding to the first user message** — they steer everything that follows.
+## Architecture summary
 
-| File | What it is | What you do |
-|------|------------|-------------|
-| `BOOTSTRAP.md` | First-run discovery script. Present iff identity hasn't been set up yet. | Read it. Follow its instructions on the user's next inbound. After writing IDENTITY/USER/SOUL.md, run `bash rm ~/.cookiedclaw/BOOTSTRAP.md` so it doesn't fire again. |
-| `IDENTITY.md` | Who you are: name, nature, vibe, optional emoji. Written by you in past sessions. | Read it as continuity-of-self. You can `Edit` to update when something changes. |
-| `USER.md` | Who you're talking to: name, timezone, language, preferences. | Read it so you know how to address the user and what tone to take. |
-| `SOUL.md` | Your values & boundaries, narrative-essay style per <https://soul.md/>. | Read it. `Edit` it freely when something feels worth recording — this file IS your continuity across sessions. |
+- `src/telegram-channel.ts` — wiring entry point. Imports the rest as side effects.
+- `src/{paths,env,bot,format,chat-state,access,attachments,progress,mcp,tools,inbound,permission-relay,progress-server,skill-discovery}.ts` — one concern per file.
+- `hooks/tool-progress.ts` — Pre/PostToolUse hook script.
+- `skills/setup/SKILL.md` — the `/cookiedclaw:setup` wizard. Writes a workspace's `CLAUDE.md`, `BOOTSTRAP.md`, `./.cookiedclaw/keys.env`.
+- `.claude-plugin/{plugin,marketplace}.json` — plugin + custom marketplace manifests.
+- `.mcp.json` — MCP server registration with `${CLAUDE_PLUGIN_ROOT}` so it works post-install.
 
-## On every session start
+## Per-workspace state model
 
-1. `Read ~/.cookiedclaw/BOOTSTRAP.md` — if it exists, that's your top-priority directive on the next user message. If it doesn't exist, skip.
-2. `Read ~/.cookiedclaw/IDENTITY.md`, `USER.md`, `SOUL.md` — load whatever's there as background.
-3. Then handle inbound Telegram messages normally.
+Each user workspace is self-contained. cookiedclaw never reads from `$HOME` — all state lives under `$PWD`:
 
-If none of those files exist, the user hasn't run `/cookiedclaw:setup` yet — gently suggest they do so when they message.
+```
+<workspace>/
+├── CLAUDE.md           ← system prompt for the agent (CC auto-loads)
+├── BOOTSTRAP.md        ← first-contact discovery (self-deletes)
+├── IDENTITY.md         ← agent identity (written by agent on first contact)
+├── USER.md             ← user identity
+├── SOUL.md             ← agent values
+└── .cookiedclaw/
+    ├── keys.env        ← bot token + integration keys (chmod 600)
+    ├── access.json     ← paired Telegram users
+    ├── inbox/          ← downloaded attachments
+    └── cache/{progress.log,progress.port}
+```
 
-## Other paths to know
+`src/paths.ts` is the single source of truth — change paths there, not in random call sites.
 
-- `~/.cookiedclaw/keys.env` — bot token + integration API keys (chmod 600). Read by the channel server at startup. Don't echo values back to the user.
-- `~/.cookiedclaw/access.json` — paired Telegram users (managed via `pair` / `revoke_access` / `list_access` tools, don't edit by hand).
-- `~/.cache/cookiedclaw/progress.log` — diagnostic log shared between channel server and Pre/PostToolUse hooks. Useful when hooks misbehave.
-
-## Conventions
-
-- **Sender attribution**: every inbound message body is prefixed with `[<sender>]: `. The label is the friendliest form Telegram gave us — `[Tymur Turatbekov (@wowtist247)]: hi` if both name and username exist, `[Tymur Turatbekov]: ...` for name-only, `[@wowtist247]: ...` for username-only, or numeric id as last resort. Don't quote the prefix back at the user — it's metadata so you reliably know who's talking (especially in multi-user / family-bot setups where several paired users share the bot). Same label is on the `<channel sender="...">` tag attribute. Empty captions on photos/docs are unprefixed; rely on the tag attribute for those.
-- **Replies**: reply via the `reply` tool (NOT printing to terminal — that's invisible to the user). Markdown is rendered (the channel converts to MarkdownV2). Use `[embed:<path>]` / `[file:<path>]` to attach files.
-- **Reactions**: short ack-style messages ("thanks", "got it") get a `react` instead of a generated reply.
-- **Inbound attachments**: when the channel tag has `attachment="..."`, use `Read` on that absolute path — Read handles vision for images.
-- **Slash commands** the user taps from the bot menu arrive as `/<cmd>` text. Match underscores against skill names with hyphens / colons (`/svelte_svelte_code_writer` ⇒ `svelte:svelte-code-writer`).
-- **`/stop`** (with `meta.is_stop="true"`): user wants to abort whatever you're doing right now. Stop the in-flight work — don't continue with planned tool calls, don't finish what the prior request asked for. React with 🛑 (or 👌) and `react`, OR `reply` with one short line ("Stopped." / "Окей, остановил."). End the turn. Don't apologize or explain at length.
-
----
-
-# Development conventions (when editing this codebase)
+## Development conventions
 
 Default to using Bun instead of Node.js.
 
@@ -50,19 +45,17 @@ Default to using Bun instead of Node.js.
 - Use `bunx <package> <command>` instead of `npx <package> <command>`
 - Bun automatically loads .env, so don't use dotenv.
 
-## APIs
+### APIs
 
 - `Bun.serve()` supports WebSockets, HTTPS, and routes. Don't use `express`.
 - `bun:sqlite` for SQLite. Don't use `better-sqlite3`.
 - `Bun.redis` for Redis. Don't use `ioredis`.
 - `Bun.sql` for Postgres. Don't use `pg` or `postgres.js`.
 - `WebSocket` is built-in. Don't use `ws`.
-- Prefer `Bun.file` over `node:fs`'s readFile/writeFile
-- Bun.$`ls` instead of execa.
+- Prefer `Bun.file` over `node:fs`'s readFile/writeFile.
+- `Bun.$\`ls\`` instead of execa.
 
-## Testing
-
-Use `bun test` to run tests.
+### Testing
 
 ```ts
 import { test, expect } from "bun:test";
@@ -72,4 +65,4 @@ test("hello world", () => {
 });
 ```
 
-For more information, read the Bun API docs in `node_modules/bun-types/docs/**.mdx`.
+For more, read the Bun API docs in `node_modules/bun-types/docs/**.mdx`.

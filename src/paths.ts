@@ -1,30 +1,34 @@
 /**
  * Filesystem paths cookiedclaw uses, plus the shared diagnostic log.
  *
- * Two roots:
- *   - `~/.cookiedclaw/` for user-owned state (keys.env, BOOTSTRAP/IDENTITY/
- *     USER/SOUL.md, access.json)
- *   - `~/.cache/cookiedclaw/` for runtime artifacts (progress.port,
- *     progress.log, inbox/<downloaded-attachments>)
+ * Per-workspace philosophy: everything lives under the user's working
+ * directory (the dir CC was launched from), not in $HOME. That way each
+ * workspace is a self-contained agent — its own bot token, identity,
+ * pairing list, attachments — and the workspace CLAUDE.md gets injected
+ * by CC as the agent's system prompt automatically.
  *
- * Both are created lazily so the channel doesn't crash on a fresh box.
+ *   ./CLAUDE.md, BOOTSTRAP.md, IDENTITY.md, USER.md, SOUL.md  ← agent-visible
+ *   ./.cookiedclaw/keys.env, access.json                       ← hidden state
+ *   ./.cookiedclaw/inbox/<files>                                ← inbound attachments
+ *   ./.cookiedclaw/cache/progress.{port,log}                    ← runtime cache
+ *
+ * Cache + inbox dirs are created lazily so a fresh workspace doesn't
+ * crash the channel.
  */
 import { appendFile, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
-const HOME = process.env.HOME ?? "/tmp";
+/** Workspace root — whatever directory CC was launched from. */
+export const workspaceRoot = process.cwd();
 
-/** The cookiedclaw plugin's project root (parent of `src/`). */
-export const projectRoot = resolve(import.meta.dir, "..");
+/** Hidden state directory. Holds keys, access.json, inbox, cache. */
+export const dotCookiedclaw = resolve(workspaceRoot, ".cookiedclaw");
 
-/** User-owned state — survives plugin upgrades, edited by the agent. */
-export const dotCookiedclaw = resolve(HOME, ".cookiedclaw");
-
-/** Runtime cache — port file, debug log, downloaded attachments. */
-export const cacheDir = resolve(HOME, ".cache", "cookiedclaw");
+/** Runtime cache — port file, debug log. */
+export const cacheDir = resolve(dotCookiedclaw, "cache");
 
 /** Where we stash inbound Telegram photos / documents for CC to Read. */
-export const inboxDir = resolve(cacheDir, "inbox");
+export const inboxDir = resolve(dotCookiedclaw, "inbox");
 
 /** Channel server writes its progress-server port here at startup; hooks read it. */
 export const portFile = resolve(cacheDir, "progress.port");
@@ -36,6 +40,7 @@ export const portFile = resolve(cacheDir, "progress.port");
  */
 export const debugLog = resolve(cacheDir, "progress.log");
 
+mkdirSync(dotCookiedclaw, { recursive: true });
 mkdirSync(cacheDir, { recursive: true });
 mkdirSync(inboxDir, { recursive: true });
 

@@ -50,10 +50,16 @@ Install the plugin from this repo's custom marketplace:
 ```bash
 claude plugin marketplace add cookiedclaw/cookiedclaw
 claude plugin install cookiedclaw@cookiedclaw
+```
+
+Then create a **workspace** for your agent — a directory that becomes its home (identity, paired users, downloaded attachments all live there). Each workspace = one independent agent, so you can have a personal one and a work one side by side.
+
+```bash
+mkdir -p ~/cookiedclaw && cd ~/cookiedclaw
 claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
 ```
 
-Inside the CC session, run the onboarding wizard:
+Inside that CC session, run the onboarding wizard:
 
 ```
 /cookiedclaw:setup
@@ -61,11 +67,12 @@ Inside the CC session, run the onboarding wizard:
 
 It walks you through:
 
-1. Creating a Telegram bot with [@BotFather](https://t.me/BotFather) and saving the token to `~/.cookiedclaw/keys.env`.
+1. Creating a Telegram bot with [@BotFather](https://t.me/BotFather) and saving the token to `./.cookiedclaw/keys.env`.
 2. Optional integrations — fal.ai (image / video generation) and [Supermemory](https://supermemory.ai) (cross-session memory).
-3. A first-contact identity discovery: you tell the agent who you are and what to call it; it writes `IDENTITY.md` / `USER.md` / `SOUL.md` into `~/.cookiedclaw/`.
+3. A first-contact identity discovery: you tell the agent who you are and what to call it; it writes `IDENTITY.md` / `USER.md` / `SOUL.md` into the workspace root.
+4. A workspace `CLAUDE.md` — the agent's system prompt, auto-loaded by CC every time you launch from this directory.
 
-Restart CC with the same flag, DM your bot, and pair yourself with the code the bot replies with. From then on, you're talking to your CC session over Telegram.
+Restart CC from the same workspace directory, DM your bot, and pair yourself with the code the bot replies with. From then on, you're talking to your CC session over Telegram.
 
 > [!NOTE]
 > The `--dangerously-load-development-channels` flag is required because cookiedclaw isn't on Anthropic's curated channel allowlist yet. It'll go away once the plugin is approved.
@@ -73,16 +80,20 @@ Restart CC with the same flag, DM your bot, and pair yourself with the code the 
 <details>
 <summary>Developer setup (cloning the repo)</summary>
 
-If you're hacking on cookiedclaw itself, load this checkout as a plugin via `--plugin-dir`:
+If you're hacking on cookiedclaw itself:
 
 ```bash
 git clone git@github.com:cookiedclaw/cookiedclaw.git
 cd cookiedclaw
 bun install
-claude --plugin-dir . --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
+
+# Run from a separate workspace directory so identity files don't land in the repo
+mkdir -p ~/cookied-dev && cd ~/cookied-dev
+claude --plugin-dir ~/projects/bots/cookiedclaw \
+       --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
 ```
 
-The MCP server config (`.mcp.json`) uses `${CLAUDE_PLUGIN_ROOT}` which only resolves when CC loads this dir as a plugin — that's why bare project mode (no `--plugin-dir`) doesn't work.
+`.mcp.json` uses `${CLAUDE_PLUGIN_ROOT}` so CC must load the cloned dir as a plugin (`--plugin-dir`). Workspace state (keys, identity, access list) lives in whatever dir you run `claude` from — keep that separate from the source repo.
 
 </details>
 
@@ -114,21 +125,30 @@ Each box is a single-purpose module:
 | `hooks/tool-progress.ts` | Pre/PostToolUse hook script |
 | `skills/setup/SKILL.md` | The `/cookiedclaw:setup` wizard |
 
-## Configuration
+## Workspace layout
 
-Per-user state lives in `~/.cookiedclaw/`. The setup wizard creates and maintains it; you rarely edit by hand.
+Everything cookiedclaw needs lives in your workspace directory — the one you ran `/cookiedclaw:setup` from. Multiple workspaces = multiple independent agents.
 
-| Path | What it is |
-|------|------------|
-| `keys.env` | `TELEGRAM_BOT_TOKEN`, optional `FAL_KEY`, `SUPERMEMORY_CC_API_KEY`. `chmod 600`. |
-| `access.json` | Paired Telegram users. Edit only via the `pair` / `revoke_access` / `list_access` MCP tools. |
-| `BOOTSTRAP.md` | One-shot first-contact script. Self-deletes after the agent runs it. |
-| `IDENTITY.md` | The agent's name, nature, vibe. Written by the agent during first contact, edited freely thereafter. |
-| `USER.md` | Your name, timezone, language, tone preferences. |
-| `SOUL.md` | The agent's continuity-of-self essay, per [soul.md](https://soul.md/). |
+```
+~/cookiedclaw/                  ← your workspace
+├── CLAUDE.md                   ← system prompt (CC auto-loads from CWD)
+├── BOOTSTRAP.md                ← first-contact discovery (self-deletes)
+├── IDENTITY.md                 ← agent's name, nature, vibe
+├── USER.md                     ← who you are
+├── SOUL.md                     ← agent's values & continuity essay
+└── .cookiedclaw/               ← hidden state
+    ├── keys.env                ← bot token + integration keys (chmod 600)
+    ├── access.json             ← paired Telegram users
+    ├── inbox/                  ← downloaded attachments
+    └── cache/
+        ├── progress.log        ← shared diagnostic log
+        └── progress.port       ← localhost port for tool-progress hooks
+```
+
+The setup wizard creates and maintains `keys.env` and `access.json`; you rarely edit them by hand. Identity files (`IDENTITY.md`, `USER.md`, `SOUL.md`) are agent-written and human-editable — tweak any time.
 
 > [!TIP]
-> Diagnostics live in `~/.cache/cookiedclaw/progress.log` — channel server and hook script both write here. If something doesn't reach Telegram, that log usually shows where the chain broke (server didn't bind, hook couldn't find the port, no active chat, etc.).
+> Diagnostics live in `./.cookiedclaw/cache/progress.log` (within your workspace). If something doesn't reach Telegram, that log usually shows where the chain broke (server didn't bind, hook couldn't find the port, no active chat, etc.).
 
 ## Running on a server
 
@@ -139,8 +159,10 @@ ssh -L 8080:localhost:8080 user@your-server   # one-time, port-forward for the O
 claude /login                                  # browser auth — happens once
 claude plugin marketplace add cookiedclaw/cookiedclaw
 claude plugin install cookiedclaw@cookiedclaw
-tmux new -s cookied                            # start a named session
+mkdir -p ~/cookiedclaw && cd ~/cookiedclaw    # workspace dir
+tmux new -s cookied
 claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
+# Run /cookiedclaw:setup inside CC the first time
 # Ctrl+b d  to detach — session keeps running, you can exit SSH
 ```
 
