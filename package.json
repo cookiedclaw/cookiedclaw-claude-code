@@ -1,6 +1,5 @@
 {
   "name": "cookiedclaw",
-  "module": "index.ts",
   "type": "module",
   "private": true,
   "devDependencies": {
@@ -10,8 +9,11 @@
     "typescript": "^5"
   },
   "scripts": {
-    "dev": "bun --hot index.ts",
-    "start": "bun index.ts"
+    "channel": "bun ./src/telegram-channel.ts",
+    "typecheck": "tsc --noEmit"
   },
-  "dependencies": {}
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "grammy": "^1.42.0"
+  }
 }

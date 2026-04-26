@@ -1,0 +1,8 @@
+{
+  "name": "cookiedclaw",
+  "description": "Telegram channel for Claude Code with multi-bot, image/file dispatch, and onboarding for fal.ai / Supermemory / Tavily integrations.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Timur Turatbekov"
+  }
+}
