@@ -23,12 +23,8 @@
  */
 import { appendFile, existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
 import { Bot, InlineKeyboard, InputFile } from "grammy";
 import matter from "gray-matter";
 import telegramifyMarkdown from "telegramify-markdown";
@@ -555,7 +551,7 @@ async function pushProgress(chatId: string): Promise<void> {
 // MCP server (channel + reply tool)
 // -----------------------------------------------------------------------------
 
-const mcp = new Server(
+const mcp = new McpServer(
   { name: "telegram", version: "0.1.0" },
   {
     capabilities: {
@@ -570,7 +566,6 @@ const mcp = new Server(
         // by sender (env allowlist + paired users).
         "claude/channel/permission": {},
       },
-      tools: {},
     },
     instructions:
       'Telegram messages arrive as <channel source="telegram" chat_id="..." sender="..." message_id="..." [attachment="/abs/path"]>. ' +
@@ -591,92 +586,6 @@ const mcp = new Server(
   },
 );
 
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: "reply",
-      description:
-        "Send a message back to the Telegram chat. Pass the `chat_id` from the inbound <channel> tag verbatim.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          chat_id: {
-            type: "string",
-            description: "Telegram chat ID from the inbound channel tag.",
-          },
-          text: {
-            type: "string",
-            description:
-              "Reply body. Write standard CommonMark Markdown freely — bold (**…**), italic (*…*), inline `code`, ```code blocks```, [links](url), bullet lists, etc. The channel converts to Telegram MarkdownV2 and handles escaping. Tables aren't rendered by Telegram; use bullet lists instead.\n\n" +
-              "To attach files inline, include `[embed:<path-or-url>]` (auto: photo for images, document for other files) or `[file:<path-or-url>]` (always document, no compression). The markers are extracted from the visible text before sending. Examples: 'Here's the chart: [embed:./chart.png]' or 'Original: [file:/tmp/photo.png]'.",
-          },
-        },
-        required: ["chat_id", "text"],
-      },
-    },
-    {
-      name: "react",
-      description:
-        "Add an emoji reaction to the user's inbound message instead of sending a full text reply. Use this for short acknowledgments (\"thanks\", \"got it\", \"ok\", \"cool\") where a generated reply would just be noise — the reaction shows the user you saw their message and ends the turn cleanly. Don't use for substantive responses; use `reply` for those. " +
-        "Allowed emojis are limited to Telegram's curated standard set: 👍 👎 ❤️ 🔥 🥰 👏 😁 🤔 🤯 😱 🤬 😢 🎉 🤩 🤮 💩 🙏 👌 🕊 🤡 🥱 🥴 😍 🐳 ❤️‍🔥 🌚 🌭 💯 🤣 ⚡️ 🍌 🏆 💔 🤨 😐 🍓 🍾 💋 🖕 😈 😴 😭 🤓 👻 👨‍💻 👀 🎃 🙈 😇 😨 🤝 ✍️ 🤗 🫡 🎅 🎄 ☃️ 💅 🤪 🗿 🆒 💘 🙉 🦄 😘 💊 🙊 😎 👾 🤷‍♂️ 🤷 🤷‍♀️ 😡. Custom/premium emoji are not supported here.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          chat_id: {
-            type: "string",
-            description: "Telegram chat ID from the inbound channel tag.",
-          },
-          message_id: {
-            type: "string",
-            description: "Telegram message_id from the inbound channel tag — this is the user's message you're reacting to.",
-          },
-          emoji: {
-            type: "string",
-            description: "A single emoji from Telegram's allowed list (see tool description). One emoji per call.",
-          },
-        },
-        required: ["chat_id", "message_id", "emoji"],
-      },
-    },
-    {
-      name: "pair",
-      description:
-        "Approve a pending Telegram pairing request by its 5-letter code. When someone DMs the bot but isn't on the allowlist, the bot replies with a code and tells them to ask the owner. The owner relays the code here. After approval, that sender can message normally — the bot will start forwarding their messages into this session.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          code: {
-            type: "string",
-            description: "5-letter pairing code from the bot's reply (case-insensitive).",
-          },
-        },
-        required: ["code"],
-      },
-    },
-    {
-      name: "revoke_access",
-      description:
-        "Revoke a previously paired Telegram user's access. Their future messages will be dropped silently.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          user_id: {
-            type: "string",
-            description: "Telegram numeric user ID to revoke (find via `list_access`).",
-          },
-        },
-        required: ["user_id"],
-      },
-    },
-    {
-      name: "list_access",
-      description:
-        "List everyone with Telegram access right now: env-based static allowlist, paired runtime users, and any pending pairing requests still waiting for approval.",
-      inputSchema: { type: "object", properties: {} },
-    },
-  ],
-}));
-
 // Construct with a placeholder when there's no token yet so the rest of
 // the file (which references `bot` from many places) doesn't crash on
 // import. We never call bot.start() in that case, so the placeholder
@@ -684,11 +593,31 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
 // handler that touches bot.api wraps in try/catch already.
 const bot = new Bot(token ?? "0:no-token-yet");
 
-mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
-  const { name, arguments: args } = req.params;
+// -----------------------------------------------------------------------------
+// Tool registrations — McpServer high-level API. Each registerTool() call
+// declares one tool's schema (zod-validated) and handler. The dispatcher
+// is implicit — McpServer routes by name and validates input before
+// calling the callback, so handlers get type-safe args directly.
+// -----------------------------------------------------------------------------
 
-  if (name === "reply") {
-    const { chat_id, text } = args as { chat_id: string; text: string };
+mcp.registerTool(
+  "reply",
+  {
+    description:
+      "Send a message back to the Telegram chat. Pass the `chat_id` from the inbound <channel> tag verbatim.",
+    inputSchema: {
+      chat_id: z
+        .string()
+        .describe("Telegram chat ID from the inbound channel tag."),
+      text: z
+        .string()
+        .describe(
+          "Reply body. Write standard CommonMark Markdown freely — bold (**…**), italic (*…*), inline `code`, ```code blocks```, [links](url), bullet lists, etc. The channel converts to Telegram MarkdownV2 and handles escaping. Tables aren't rendered by Telegram; use bullet lists instead.\n\n" +
+            "To attach files inline, include `[embed:<path-or-url>]` (auto: photo for images, document for other files) or `[file:<path-or-url>]` (always document, no compression). The markers are extracted from the visible text before sending. Examples: 'Here's the chart: [embed:./chart.png]' or 'Original: [file:/tmp/photo.png]'.",
+        ),
+    },
+  },
+  async ({ chat_id, text }) => {
     // CC is done thinking — drop the typing indicator before the bubble lands.
     stopTyping(chat_id);
     // Drop the in-place progress message (its job is done) and send the
@@ -713,7 +642,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     try {
       const { embeds, cleaned } = extractEmbeds(text);
       await sendReply(Number(chat_id), cleaned, embeds);
-      // Reset the event list so the next turn starts clean.
       chats.set(chat_id, { events: [] });
       const note =
         embeds.length > 0
@@ -728,16 +656,32 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         isError: true,
       };
     }
-  }
+  },
+);
 
-  if (name === "react") {
-    const { chat_id, message_id, emoji } = args as {
-      chat_id: string;
-      message_id: string;
-      emoji: string;
-    };
-    // Same end-of-turn cleanup as reply: typing off, drop the progress
-    // message, reset events. Reacting IS the answer — no follow-up text.
+mcp.registerTool(
+  "react",
+  {
+    description:
+      'Add an emoji reaction to the user\'s inbound message instead of sending a full text reply. Use this for short acknowledgments ("thanks", "got it", "ok", "cool") where a generated reply would just be noise — the reaction shows the user you saw their message and ends the turn cleanly. Don\'t use for substantive responses; use `reply` for those. ' +
+      "Allowed emojis are limited to Telegram's curated standard set: 👍 👎 ❤️ 🔥 🥰 👏 😁 🤔 🤯 😱 🤬 😢 🎉 🤩 🤮 💩 🙏 👌 🕊 🤡 🥱 🥴 😍 🐳 ❤️‍🔥 🌚 🌭 💯 🤣 ⚡️ 🍌 🏆 💔 🤨 😐 🍓 🍾 💋 🖕 😈 😴 😭 🤓 👻 👨‍💻 👀 🎃 🙈 😇 😨 🤝 ✍️ 🤗 🫡 🎅 🎄 ☃️ 💅 🤪 🗿 🆒 💘 🙉 🦄 😘 💊 🙊 😎 👾 🤷‍♂️ 🤷 🤷‍♀️ 😡. Custom/premium emoji are not supported here.",
+    inputSchema: {
+      chat_id: z
+        .string()
+        .describe("Telegram chat ID from the inbound channel tag."),
+      message_id: z
+        .string()
+        .describe(
+          "Telegram message_id from the inbound channel tag — this is the user's message you're reacting to.",
+        ),
+      emoji: z
+        .string()
+        .describe(
+          "A single emoji from Telegram's allowed list (see tool description). One emoji per call.",
+        ),
+    },
+  },
+  async ({ chat_id, message_id, emoji }) => {
     stopTyping(chat_id);
     await queueEdit(chat_id, async () => {
       const state = chats.get(chat_id);
@@ -757,8 +701,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     });
     try {
       // grammy types `emoji` as a strict union of Telegram's allowed
-      // emoji literals; we accept any string from CC at runtime and let
-      // Telegram reject if it's not allowed. Cast through unknown here.
+      // literals; we accept any string from CC and let Telegram reject
+      // if it's not on the curated list.
       await bot.api.setMessageReaction(Number(chat_id), Number(message_id), [
         { type: "emoji", emoji } as unknown as Parameters<
           typeof bot.api.setMessageReaction
@@ -776,31 +720,42 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         isError: true,
       };
     }
-  }
+  },
+);
 
-  if (name === "pair") {
+mcp.registerTool(
+  "pair",
+  {
+    description:
+      "Approve a pending Telegram pairing request by its 5-letter code. When someone DMs the bot but isn't on the allowlist, the bot replies with a code and tells them to ask the owner. The owner relays the code here. After approval, that sender can message normally — the bot will start forwarding their messages into this session.",
+    inputSchema: {
+      code: z
+        .string()
+        .describe("5-letter pairing code from the bot's reply (case-insensitive)."),
+    },
+  },
+  async ({ code }) => {
     reapPending();
-    const code = String((args as { code: string }).code).toLowerCase().trim();
-    const pending = pendingPairs.get(code);
+    const normalized = code.toLowerCase().trim();
+    const pending = pendingPairs.get(normalized);
     if (!pending) {
       return {
         content: [
           {
             type: "text",
-            text: `No pending pairing for code "${code}". Codes expire after 10 minutes — ask the user to DM the bot again to get a fresh one.`,
+            text: `No pending pairing for code "${normalized}". Codes expire after 10 minutes — ask the user to DM the bot again to get a fresh one.`,
           },
         ],
         isError: true,
       };
     }
-    pendingPairs.delete(code);
+    pendingPairs.delete(normalized);
     pairedUsers.set(pending.userId, {
       userId: pending.userId,
       name: pending.name,
       addedAt: Date.now(),
     });
     await saveAccess();
-    // Tell the just-paired user they're approved so they don't have to guess.
     try {
       await sendFormatted(
         pending.userId,
@@ -817,14 +772,30 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         },
       ],
     };
-  }
+  },
+);
 
-  if (name === "revoke_access") {
-    const userIdStr = String((args as { user_id: string }).user_id).trim();
-    const userId = Number(userIdStr);
+mcp.registerTool(
+  "revoke_access",
+  {
+    description:
+      "Revoke a previously paired Telegram user's access. Their future messages will be dropped silently.",
+    inputSchema: {
+      user_id: z
+        .string()
+        .describe("Telegram numeric user ID to revoke (find via `list_access`)."),
+    },
+  },
+  async ({ user_id }) => {
+    const userId = Number(user_id.trim());
     if (!Number.isFinite(userId)) {
       return {
-        content: [{ type: "text", text: `user_id must be numeric, got "${userIdStr}"` }],
+        content: [
+          {
+            type: "text",
+            text: `user_id must be numeric, got "${user_id}"`,
+          },
+        ],
         isError: true,
       };
     }
@@ -840,9 +811,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         },
       ],
     };
-  }
+  },
+);
 
-  if (name === "list_access") {
+mcp.registerTool(
+  "list_access",
+  {
+    description:
+      "List everyone with Telegram access right now: env-based static allowlist, paired runtime users, and any pending pairing requests still waiting for approval.",
+    inputSchema: {},
+  },
+  async () => {
     reapPending();
     const lines: string[] = [];
     if (allowAll) {
@@ -877,10 +856,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     return { content: [{ type: "text", text: lines.join("\n") }] };
-  }
-
-  throw new Error(`unknown tool: ${name}`);
-});
+  },
+);
 
 // -----------------------------------------------------------------------------
 // Telegram inbound → CC channel notification
@@ -945,7 +922,7 @@ async function forwardToCC(
   };
   if (attachmentPath) meta.attachment = attachmentPath;
   try {
-    await mcp.notification({
+    await mcp.server.notification({
       method: "notifications/claude/channel",
       params: { content, meta },
     });
@@ -1102,7 +1079,7 @@ function formatPermissionPrompt(p: {
   return `🔒 Claude wants to run **${p.tool_name}**\n\n${p.description}${preview}`;
 }
 
-mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
+mcp.server.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
   if (!activeChatId) {
     dlog(
       `permission request with no active chat (tool=${params.tool_name}, id=${params.request_id})`,
@@ -1146,7 +1123,7 @@ bot.callbackQuery(/^perm_(allow|deny):([a-km-z]{5})$/, async (ctx) => {
   const requestId = ctx.match[2]!;
 
   try {
-    await mcp.notification({
+    await mcp.server.notification({
       method: "notifications/claude/channel/permission",
       params: { request_id: requestId, behavior: verdict },
     });
