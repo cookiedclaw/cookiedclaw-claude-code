@@ -24,7 +24,7 @@ import {
 import { sendFormatted, senderDisplayName } from "./format.ts";
 import { mcp } from "./mcp.ts";
 import { dlog, stopFlag } from "./paths.ts";
-import { deleteProgressMessage } from "./progress.ts";
+import { deleteProgressMessage, schedulePush } from "./progress.ts";
 import { formatSkillsListMessage } from "./skill-discovery.ts";
 import { unlink } from "node:fs/promises";
 
@@ -64,6 +64,13 @@ async function forwardToCC(
   // PreToolUse hook stops blocking non-reply tools.
   unlink(stopFlag).catch(() => {});
   startTyping(chatId);
+  // Native-feel feedback: schedule a "🤔 Thinking…" progress message
+  // immediately. If the agent calls its first tool within the 200ms
+  // debounce window, the same push picks up the tool-event state. If
+  // not (e.g. agent thinks for several seconds before any tool), the
+  // user sees a Thinking bubble within 200ms instead of staring at the
+  // typing indicator alone.
+  schedulePush(chatId);
   dlog(
     `inbound: chat=${chatId} sender=${senderId} msg=${messageId}${attachmentPath ? ` attachment=${attachmentPath}` : ""}`,
   );

@@ -30,6 +30,16 @@ function formatDuration(ms: number): string {
 }
 
 /**
+ * Strip `mcp__<server>__` and `mcp__plugin_<plugin>_<server>__` prefixes
+ * from displayed tool names. The full name is great for filtering /
+ * permissions but ugly in chat — `mcp__supermemory__super_search` reads
+ * way better as just `super_search`.
+ */
+export function displayToolName(name: string): string {
+  return name.replace(/^mcp__(?:plugin_[^_]+_)?[^_]+__/, "");
+}
+
+/**
  * Pick a short, informative summary of a tool's input for the progress
  * line. Knows the most common CC tools and falls back to compact JSON.
  */
@@ -52,8 +62,26 @@ export function summarizeToolInput(name: string, input: unknown): string {
     if (name === "Grep" && typeof obj.pattern === "string") return obj.pattern;
     if (name === "WebFetch" && typeof obj.url === "string") return obj.url;
     if (name === "WebSearch" && typeof obj.query === "string") return obj.query;
+    // Sub-agents: superpowers/whatever Agent calls show as "<type>: <prompt>".
     if (name === "Agent" && typeof obj.subagent_type === "string") {
       return `${obj.subagent_type}: ${typeof obj.prompt === "string" ? clamp(obj.prompt, 60) : ""}`;
+    }
+    // Skill invocation (when the agent decides to load a skill).
+    if (name === "Skill" && typeof obj.skill === "string") {
+      return obj.skill;
+    }
+    if (name === "ToolSearch" && typeof obj.query === "string") {
+      return obj.query;
+    }
+    if (name === "AskUserQuestion" && typeof obj.question === "string") {
+      return clamp(obj.question, 90);
+    }
+    // TodoWrite — a todos array is most informative as "N todos".
+    if (name === "TodoWrite" && Array.isArray(obj.todos)) {
+      const t = obj.todos as Array<{ status?: string; content?: string }>;
+      const inProgress = t.find((x) => x.status === "in_progress");
+      if (inProgress?.content) return clamp(inProgress.content, 80);
+      return `${t.length} todo${t.length === 1 ? "" : "s"}`;
     }
     // Generic: show the first short string-valued field, or compact JSON.
     for (const [k, v] of Object.entries(obj)) {
@@ -78,16 +106,36 @@ export function isReplyTool(name: string): boolean {
 /** Telegram message hard limit is 4096; reserve headroom for "(+N more)" line. */
 const TELEGRAM_MSG_LIMIT = 3800;
 
+/** Per-tool emoji prefix to make the progress message scannable at a
+ * glance. Sub-agents (Agent) and Skill loads get distinct icons so the
+ * user can tell "the agent dispatched a sub-agent" vs "the agent ran a
+ * Bash". Falls through to the bare status icon for unknown tools. */
+function toolPrefix(toolName: string): string {
+  if (toolName === "Agent" || toolName === "Task") return "🤖";
+  if (toolName === "Skill") return "🧩";
+  if (toolName === "Bash") return "⚙️";
+  if (toolName === "Read") return "📖";
+  if (toolName === "Edit" || toolName === "Write" || toolName === "NotebookEdit")
+    return "✏️";
+  if (toolName === "Grep" || toolName === "Glob") return "🔍";
+  if (toolName === "WebFetch" || toolName === "WebSearch") return "🌐";
+  if (toolName === "TodoWrite") return "📝";
+  if (toolName === "AskUserQuestion") return "❓";
+  return "•";
+}
+
 function formatEventLine(e: ToolEvent): string {
-  const icon =
+  const status =
     e.status === "running" ? "⏳" : e.status === "done" ? "✓" : "✗";
+  const display = displayToolName(e.toolName);
+  const prefix = toolPrefix(display);
   const dur = e.durationMs ? ` (${formatDuration(e.durationMs)})` : "";
   const errPart = e.errorText ? ` — ${clamp(e.errorText, 80)}` : "";
-  return `${icon} ${e.toolName}: ${e.inputSummary}${dur}${errPart}`;
+  return `${status} ${prefix} ${display}: ${e.inputSummary}${dur}${errPart}`;
 }
 
 function renderProgress(events: ToolEvent[]): string {
-  if (events.length === 0) return "🔧 working…";
+  if (events.length === 0) return "🤔 Thinking…";
   const lines = events.map(formatEventLine);
   const full = lines.join("\n");
   if (full.length <= TELEGRAM_MSG_LIMIT) return full;
@@ -232,7 +280,14 @@ function applyEvent(
 const pushDebounce = new Map<string, ReturnType<typeof setTimeout>>();
 const PUSH_DEBOUNCE_MS = 200;
 
-function schedulePush(chatId: string): void {
+/**
+ * Coalesce rapid pushProgress calls. Public so forwardToCC can request
+ * an initial "🤔 Thinking…" message as soon as an inbound arrives —
+ * the user sees instant feedback even before the first tool fires.
+ * If a tool DOES fire within the debounce window, the same scheduled
+ * push picks up the updated state (events list).
+ */
+export function schedulePush(chatId: string): void {
   if (pushDebounce.has(chatId)) return;
   const timer = setTimeout(() => {
     pushDebounce.delete(chatId);
