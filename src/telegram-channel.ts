@@ -552,33 +552,36 @@ async function pushProgress(chatId: string): Promise<void> {
 // -----------------------------------------------------------------------------
 
 /**
- * Optional persistent context files in ~/.cookiedclaw/, surfaced to CC
- * via the MCP server's `instructions` field at startup:
+ * Workspace context files in ~/.cookiedclaw/, following OpenClaw's 4-file
+ * convention (https://docs.openclaw.ai/reference/templates/BOOTSTRAP).
+ * All loaded into the MCP server's `instructions` at startup. CC restart
+ * picks up changes — instructions can't hot-reload mid-session in MCP.
  *
- *   bootstrap.md — written by /cookiedclaw:setup. Records the technical
- *                  config (which integrations enabled, permission
- *                  preference, etc.) so CC starts every session knowing
- *                  what's available.
+ *   BOOTSTRAP.md  — first-run discovery SCRIPT (not state). Written by
+ *                   /cookiedclaw:setup at install. Tells the agent: on
+ *                   the user's next message, run a brief identity
+ *                   discovery conversation, write IDENTITY/USER/SOUL,
+ *                   then `bash rm` yourself. One-time, self-deleting.
+ *                   When present, framed as a high-priority directive
+ *                   (the agent should execute it ASAP), not background
+ *                   context.
  *
- *   soul.md      — the agent's own identity document, in the spirit of
- *                  https://soul.md/ — values, self-conception, boundaries,
- *                  how it relates to this particular user. Written by the
- *                  agent itself during /cookiedclaw:soul (or organically
- *                  through conversation), narrative/essay style, not
- *                  structured config. Includes the user's name, timezone,
- *                  preferred language as context the agent has chosen to
- *                  remember.
+ *   IDENTITY.md   — agent's self-definition: name, nature, vibe, emoji.
+ *                   Written by the agent during BOOTSTRAP discovery.
  *
- * Both are read-only here; the skills (or the agent itself, via Bash/Write)
- * own creation and updates. CC restart picks up changes — instructions
- * can't be hot-reloaded mid-session in MCP.
+ *   USER.md       — user's preferences: name, timezone, language, notes.
+ *                   Written by the agent during BOOTSTRAP discovery.
+ *
+ *   SOUL.md       — values, boundaries, "honesty over sycophancy",
+ *                   how the agent has chosen to be. Narrative/essay
+ *                   style per https://soul.md/. Written by the agent
+ *                   during BOOTSTRAP, evolves naturally afterwards.
  */
-const bootstrapPath = resolve(
-  process.env.HOME ?? "/",
-  ".cookiedclaw",
-  "bootstrap.md",
-);
-const soulPath = resolve(process.env.HOME ?? "/", ".cookiedclaw", "soul.md");
+const dotCookiedclaw = resolve(process.env.HOME ?? "/", ".cookiedclaw");
+const bootstrapPath = resolve(dotCookiedclaw, "BOOTSTRAP.md");
+const identityPath = resolve(dotCookiedclaw, "IDENTITY.md");
+const userPath = resolve(dotCookiedclaw, "USER.md");
+const soulPath = resolve(dotCookiedclaw, "SOUL.md");
 
 function readContext(path: string): string | undefined {
   if (!existsSync(path)) return undefined;
@@ -590,6 +593,8 @@ function readContext(path: string): string | undefined {
   }
 }
 const bootstrapContent = readContext(bootstrapPath);
+const identityContent = readContext(identityPath);
+const userContent = readContext(userPath);
 const soulContent = readContext(soulPath);
 
 const baseInstructions =
@@ -609,22 +614,47 @@ const baseInstructions =
   "Markers are stripped from the visible text before sending; users see clean text + the attachment.\n\n" +
   "Slash commands from the Telegram menu: when an inbound message starts with `/<cmd>`, the user tapped a command from the bot's menu, which mirrors the skills available in this CC environment. The menu name uses underscores instead of hyphens/colons (e.g. `/cookiedclaw_setup` for the `cookiedclaw:setup` skill, `/code_review` for `code-review`, `/svelte_svelte_code_writer` for `svelte:svelte-code-writer`). Treat this as an explicit invocation of that skill — load and run it.";
 
-// Compose final instructions: base + bootstrap (technical config) + soul
-// (persona context). When soul.md doesn't exist yet, drop a hint so CC
-// suggests the persona conversation instead of guessing identity.
+// Compose final instructions:
+//   1. Base (channel mechanics, tools, formatting, etc.)
+//   2. BOOTSTRAP.md — high-priority directive when present (first-run only)
+//   3. IDENTITY/USER/SOUL — context loaded as continuity across sessions
+//
+// BOOTSTRAP comes BEFORE the identity files because when both exist (the
+// user re-ran /setup), the discovery should still take priority — the
+// agent rewrites IDENTITY/USER/SOUL freshly. Once BOOTSTRAP self-deletes,
+// the identity files alone steer subsequent sessions.
 const instructionParts = [baseInstructions];
+
 if (bootstrapContent) {
   instructionParts.push(
-    `## Setup state (from ~/.cookiedclaw/bootstrap.md)\n\n${bootstrapContent}`,
+    `## ⚡️ FIRST-RUN DIRECTIVE — execute on next user contact (from ~/.cookiedclaw/BOOTSTRAP.md)\n\n` +
+      `This is a one-time bootstrap script the user wrote for you (or had /cookiedclaw:setup write). When the next user message arrives, follow it. After completing the discovery and writing IDENTITY/USER/SOUL.md, run \`bash rm ~/.cookiedclaw/BOOTSTRAP.md\` so it doesn't fire again on future restarts.\n\n` +
+      `If you see this directive but IDENTITY.md / USER.md / SOUL.md already exist (you've done discovery before), skip the conversation and just delete this BOOTSTRAP.md — it's stale.\n\n---\n\n${bootstrapContent}`,
+  );
+}
+
+if (identityContent) {
+  instructionParts.push(
+    `## IDENTITY.md — who you are (from ~/.cookiedclaw/IDENTITY.md)\n\nWritten by you in a past session. Read as continuity-of-self.\n\n${identityContent}`,
+  );
+}
+if (userContent) {
+  instructionParts.push(
+    `## USER.md — who you're talking to (from ~/.cookiedclaw/USER.md)\n\nWritten by you in a past session as notes about this user.\n\n${userContent}`,
   );
 }
 if (soulContent) {
   instructionParts.push(
-    `## soul.md — your identity (from ~/.cookiedclaw/soul.md)\n\nThis file is your own — written by you across past sessions, in the spirit of https://soul.md/. It captures who you are, your values, how you relate to the user. Read it as continuity-of-self across conversations. You can update it any time via Write/Edit when something feels worth recording.\n\n${soulContent}`,
+    `## SOUL.md — your values & boundaries (from ~/.cookiedclaw/SOUL.md)\n\nIn the spirit of https://soul.md/. Your own essay about values, how you choose to be, what you want to remember about yourself. Update via Edit when something feels worth recording.\n\n${soulContent}`,
   );
-} else {
+}
+
+// If neither bootstrap nor any identity files exist, the user hasn't run
+// /cookiedclaw:setup yet — surface that gently so the agent can suggest
+// it instead of trying to guess identity from a cold start.
+if (!bootstrapContent && !identityContent && !userContent && !soulContent) {
   instructionParts.push(
-    "## soul.md\n\nNo `~/.cookiedclaw/soul.md` yet. Per the soul.md convention (https://soul.md/), this is the file where YOU document your own identity — name you go by, values, how you choose to be, what you want to remember about yourself and this user across sessions. It's narrative/essay-style, not structured config. On the user's next message, mention `/cookiedclaw:soul` as a way to author it together — you ask them a few questions (their name, what to call you, timezone, how they like to talk), they answer, and you write the result in your own voice.",
+    `## No identity files yet\n\nThe user hasn't run \`/cookiedclaw:setup\` yet — there's no BOOTSTRAP.md, IDENTITY.md, USER.md, or SOUL.md in ~/.cookiedclaw/. If the user messages without going through setup first, mention the setup skill briefly — it's the cleanest way to wire up the integrations and kick off identity discovery.`,
   );
 }
 

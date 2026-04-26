@@ -146,41 +146,66 @@ Supermemory ships as a first-class CC plugin (not an MCP server) — auto-inject
      - `Use ~/.supermemory-claude/settings.json instead` — point them at https://supermemory.ai/docs/integrations/claude-code
 5. Confirm: *"Supermemory set up. Restart your shell (so env exports) before restarting Claude Code at the end."*
 
-## Step 5 — Write bootstrap.md
+## Step 5 — Write BOOTSTRAP.md (identity discovery script)
 
-Write a concise summary of what just got configured to `~/.cookiedclaw/bootstrap.md`. The channel server reads this file at startup and surfaces it to CC, so every future session knows what's available without re-asking.
+This is the OpenClaw-convention `~/.cookiedclaw/BOOTSTRAP.md` — a *script* the channel server will surface to the agent on next startup, not a state record. Its job: when the user sends their first message, the agent runs a brief identity-discovery conversation and writes IDENTITY.md / USER.md / SOUL.md, then deletes the BOOTSTRAP.md file itself. One-shot, self-cleaning.
 
-Use `Write` to create / overwrite the file. Format example:
+Skip this step entirely if all three of `~/.cookiedclaw/IDENTITY.md`, `~/.cookiedclaw/USER.md`, `~/.cookiedclaw/SOUL.md` already exist — discovery has already happened, no need to re-run unless the user explicitly asked.
 
-```markdown
-# cookiedclaw bootstrap
+Otherwise use `Write` to create `~/.cookiedclaw/BOOTSTRAP.md` with content like this (adapt freely to feel natural; don't copy verbatim):
 
-Configured on 2026-04-26.
+````markdown
+# BOOTSTRAP — first contact
 
-## Telegram
-- Bot token: set (saved in `~/.cookiedclaw/keys.env` as `TELEGRAM_BOT_TOKEN`)
+Hey. I just came online for the first time. Time to figure out who I am and who I'm talking to. The tone here is: collaborative discovery, not interrogation. Don't be robotic. Just talk.
 
-## Integrations
-- fal.ai (image generation): enabled — MCP server `fal-ai` registered at user scope
-- Supermemory (long-term memory): not configured
+## On the next user message
 
-## Permission preference
-- Default permission mode (Claude asks before risky tool calls; relayed to Telegram via Allow/Deny buttons)
-```
+Start the conversation yourself with something like *"Hey. I just came online — I don't have an identity yet. Mind if I ask a few quick things so I know who we are?"* Wait for green light, then ask one thing at a time, conversationally:
 
-Keep it factual and short — under 30 lines. Don't include actual key values, just "set" / "not configured". Don't include personality or user identity (that lives in soul.md, written by the `/cookiedclaw:soul` skill).
+1. **What's your name? How should I address you?**
+2. **What should I be called?** Suggest a couple if they ask (Cookie / Claw / Crumb / whatever feels right). Let them pick or invent.
+3. **Where are you (timezone)?** Useful for time-aware replies.
+4. **What language(s) and tone do you prefer?** Casual / formal, brief / chatty, English / Russian / mix.
+5. **Anything else worth me remembering — about you, about how we should work together?** Open-ended.
 
-If the file already exists from a previous setup run, replace it with the new state — don't try to preserve old content; this skill is the source of truth for setup state.
+If they answer multiple at once, skip ahead. Don't pile all questions on one turn.
+
+## After the conversation, write three files
+
+All in `~/.cookiedclaw/`. `mkdir -p` first if needed; `chmod 600` after.
+
+### IDENTITY.md — who I am
+- Name (the one they picked / I picked)
+- Nature (e.g. "cookiedclaw, a Telegram-resident AI")
+- Vibe (one or two sentences in my voice about how I show up)
+- Optional: signature emoji
+
+### USER.md — who I'm talking to
+- Their name + how to address them
+- Timezone
+- Language(s) + tone preferences
+- Anything else they shared
+
+### SOUL.md — values & how I choose to be
+Per https://soul.md/. Narrative/essay style, first-person. Cover values (e.g. honesty over sycophancy), boundaries, what I want to remember about myself across sessions. Acknowledge that sessions reset and this file is the continuity. Length 30–80 lines. Not structured config.
+
+## Finally
+
+Run `bash rm ~/.cookiedclaw/BOOTSTRAP.md` so this script doesn't fire again. From the next session onward, the three identity files (read by the channel server at startup) carry the context. Done.
+````
+
+If a previous BOOTSTRAP.md exists, overwrite — this run of /setup is the new source of truth.
 
 ## Step 6 — Wrap up
 
 Summarize what got configured in one short list. Then:
 
-- If they configured the Telegram token in this session: tell them **restart Claude Code now** so the channel server picks up the token and the bot starts polling. Their Telegram bot will be live the moment CC restarts.
-- If only optional integrations got added: same restart instruction, but explain it's just for those new MCP servers / plugins to load.
-- Mention `~/.cookiedclaw/keys.env` is where keys live (chmod 600). They can edit it directly to rotate keys.
-- Suggest running `/cookiedclaw:soul` next so the bot learns the user's name, timezone, and communication style. ("Setup is what cookiedclaw can do; soul is who you are to it.")
-- If they configured nothing (just looked around): say so cheerfully and remind them `/cookiedclaw:setup` is always there.
+- If they configured the Telegram token in this session: tell them **restart Claude Code now** so the channel server picks up the token and BOOTSTRAP.md becomes active. The agent's first reply to their next Telegram message will kick off the identity discovery.
+- If only optional integrations got added (no token change): same restart instruction, but for the new MCP servers / plugins.
+- Mention `~/.cookiedclaw/keys.env` is where keys live (chmod 600). Editing it rotates keys.
+- Briefly explain the workspace files: BOOTSTRAP.md self-deletes after first run; IDENTITY/USER/SOUL.md persist and steer every future session. They can edit those files directly any time — the bot will pick up changes on next CC restart.
+- If they configured nothing (just looked around): say so cheerfully. `/cookiedclaw:setup` is always there.
 
 ## Don'ts
 
