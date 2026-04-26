@@ -20,7 +20,10 @@
 
 **cookiedclaw** is a Claude Code plugin that turns any Telegram chat into a frontend for your CC session. It bridges Telegram and CC over a custom MCP channel so inbound DMs become `<channel source="telegram">` events the agent can act on, and CC's tool calls, permission prompts, and file output flow back to the chat in real time.
 
-It's small enough to read in an afternoon (~2k LOC of TypeScript across 14 focused modules) and pragmatic about the trade-offs: the agent uses your existing claude.ai subscription, runs on your hardware, and keeps a persistent identity across sessions in `~/.cookiedclaw/`.
+It's small enough to read in an afternoon (~2k LOC of TypeScript across 14 focused modules) and pragmatic about the trade-offs: the agent runs on your hardware and keeps a persistent identity across sessions in `~/.cookiedclaw/`.
+
+> [!IMPORTANT]
+> **Your Max subscription is billed as a subscription.** Because cookiedclaw runs inside Claude Code (not via the Anthropic SDK), Max-included usage applies normally — no surprise extra-API charges that SDK-based Telegram bridges incur. If you already pay for Claude Max, cookiedclaw is effectively free to run.
 
 > [!NOTE]
 > cookiedclaw is in active development. The marketplace install path isn't open yet — for now you load it as a development channel (one extra CLI flag).
