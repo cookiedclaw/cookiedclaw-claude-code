@@ -30,6 +30,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { Bot } from "grammy";
+import telegramifyMarkdown from "telegramify-markdown";
 
 // -----------------------------------------------------------------------------
 // Env loading
@@ -287,6 +288,45 @@ function formatDuration(ms: number): string {
   return `${Math.floor(ms / 60_000)}m${Math.floor((ms % 60_000) / 1000)}s`;
 }
 
+/**
+ * Convert CC's CommonMark-flavored output into something Telegram's
+ * MarkdownV2 parser will accept. CC writes \`code\`, **bold**, lists,
+ * links, code blocks — Telegram renders them all but is strict about
+ * escaping (`. ! - + ( )` etc. all need backslashes when not part of
+ * formatting). `telegramify-markdown` does that escaping for us.
+ */
+function toTelegramMd(text: string): string {
+  try {
+    return telegramifyMarkdown(text, "escape");
+  } catch {
+    // If conversion blows up on weird input, fall back to raw text and let
+    // the caller's plain-text retry handle it.
+    return text;
+  }
+}
+
+/**
+ * Send formatted text with MarkdownV2; if Telegram rejects the markdown
+ * (rare edge cases telegramify doesn't catch), retry as plain text so we
+ * never silently drop a message just because of escape ambiguity.
+ */
+async function sendFormatted(chatId: number, text: string): Promise<void> {
+  const md = toTelegramMd(text);
+  try {
+    await bot.api.sendMessage(chatId, md, { parse_mode: "MarkdownV2" });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/can't parse|markdown|entities/i.test(msg)) {
+      console.error(
+        `[telegram] markdown parse error, retrying plain: ${msg}`,
+      );
+      await bot.api.sendMessage(chatId, text);
+    } else {
+      throw err;
+    }
+  }
+}
+
 function renderProgress(events: ToolEvent[]): string {
   if (events.length === 0) return "🔧 working…";
   return events
@@ -369,7 +409,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: {
             type: "string",
             description:
-              "Reply body. Plain text or basic Markdown; Telegram-flavored escapes still apply.",
+              "Reply body. Write standard CommonMark Markdown freely — bold (**…**), italic (*…*), inline `code`, ```code blocks```, [links](url), bullet lists, etc. The channel converts to Telegram MarkdownV2 and handles escaping. Tables aren't rendered by Telegram; use bullet lists instead.",
           },
         },
         required: ["chat_id", "text"],
@@ -443,7 +483,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
     });
     try {
-      await bot.api.sendMessage(Number(chat_id), text);
+      await sendFormatted(Number(chat_id), text);
       // Reset the event list so the next turn starts clean.
       chats.set(chat_id, { events: [] });
       return { content: [{ type: "text", text: "sent" }] };
@@ -481,7 +521,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     await saveAccess();
     // Tell the just-paired user they're approved so they don't have to guess.
     try {
-      await bot.api.sendMessage(
+      await sendFormatted(
         pending.userId,
         `✓ You're approved. Send me a message and I'll forward it to Claude.`,
       );
@@ -590,13 +630,12 @@ bot.on("message:text", async (ctx) => {
       pendingPairs.set(pair.code, pair);
     }
     try {
-      await bot.api.sendMessage(
+      await sendFormatted(
         chat.id,
         `Hi! Your access isn't approved yet.\n\n` +
           `Ask the bot owner to run this in their Claude Code session:\n` +
           `\`pair ${pair.code}\`\n\n` +
           `(code expires in 10 min)`,
-        { parse_mode: "Markdown" },
       );
     } catch (err) {
       console.error(
