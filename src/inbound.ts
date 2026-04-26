@@ -25,6 +25,7 @@ import { sendFormatted, senderDisplayName } from "./format.ts";
 import { mcp } from "./mcp.ts";
 import { dlog, stopFlag } from "./paths.ts";
 import { deleteProgressMessage } from "./progress.ts";
+import { formatSkillsListMessage } from "./skill-discovery.ts";
 import { unlink } from "node:fs/promises";
 
 /**
@@ -210,6 +211,19 @@ bot.on("message:text", async (ctx) => {
   const gated = await gateInbound(ctx);
   if (!gated.ok) return;
   const text = ctx.message.text.trim();
+  // /skills doesn't go to CC — we render the list ourselves so the user
+  // doesn't burn an agent turn just to see what's available.
+  if (text === "/skills") {
+    try {
+      const msg = await formatSkillsListMessage();
+      await sendFormatted(ctx.chat.id, msg);
+    } catch (err) {
+      console.error(
+        `[telegram] /skills failed: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+    return;
+  }
   // /stop and /cancel get a special path — we want immediate visual
   // feedback (kill typing, drop progress) before CC's reply lands.
   if (text === "/stop" || text === "/cancel") {

@@ -13,15 +13,9 @@ import { dlog, workspaceRoot } from "./paths.ts";
 
 type DiscoveredCommand = { command: string; description: string };
 
-/** Telegram's documented 100-command cap is aspirational; in practice
- * BOT_COMMANDS_TOO_MUCH fires well below that — there's an undocumented
- * ~4 KB total-payload ceiling. We start optimistic and back off if
- * Telegram complains. */
-const TELEGRAM_MAX_BOT_COMMANDS = 30;
-
-/** Cap descriptions short enough that 30 commands fit under the implicit
- * payload cap. Still informative for the menu UI. */
-const TELEGRAM_DESC_LIMIT = 100;
+/** Cap descriptions to keep the /skills chat reply scannable; most CC
+ * skill descriptions blow well past this otherwise. */
+const TELEGRAM_DESC_LIMIT = 120;
 
 /** Skills/commands matching these are CC-internal noise, not things a
  * user would tap from a phone. Hides the worst clutter. */
@@ -33,13 +27,19 @@ const HIDDEN_PATTERNS = [
   /^superpowers_/,
 ];
 
-/** Built-in cookiedclaw commands that always appear first in the menu,
- * regardless of what skills discovery turns up. Built-ins win
- * collisions — `/stop` shouldn't be reassignable. */
+/** Built-in cookiedclaw commands. These are the ONLY commands published
+ * to the Telegram bot menu — discovered skills aren't registered there
+ * because the menu blew past Telegram's undocumented payload cap once
+ * users had a few plugins. Instead, `/skills` shows the full list as a
+ * chat reply, and the user types skill commands as text. */
 const BUILTIN_COMMANDS: DiscoveredCommand[] = [
   {
     command: "stop",
     description: "Abort whatever the bot is doing right now",
+  },
+  {
+    command: "skills",
+    description: "List available skills you can invoke as text",
   },
 ];
 
@@ -197,16 +197,36 @@ async function discoverCommands(): Promise<DiscoveredCommand[]> {
         !HIDDEN_PATTERNS.some((re) => re.test(c.command)) &&
         !HIDDEN_PATTERNS.some((re) => re.test(c.description)),
     )
-    .sort((a, b) => a.command.localeCompare(b.command))
-    .slice(0, TELEGRAM_MAX_BOT_COMMANDS);
+    .sort((a, b) => a.command.localeCompare(b.command));
 }
 
 /**
- * Discover skills + built-ins, then publish to Telegram with geometric
- * backoff if Telegram rejects on payload size. Built-ins prepend so
- * they survive the cap and never collide with discovered names.
+ * Publish the Telegram bot menu. We only ship built-ins (`/stop`,
+ * `/skills`) — discovered skills are kept out of the menu and surfaced
+ * via the `/skills` command instead. Telegram's undocumented payload
+ * cap was a constant friction otherwise once users had a few plugins.
  */
 export async function publishBotMenu(): Promise<void> {
+  try {
+    await bot.api.setMyCommands(BUILTIN_COMMANDS);
+    console.error(
+      `[telegram] published bot menu: ${BUILTIN_COMMANDS.map((c) => `/${c.command}`).join(" ")}`,
+    );
+    dlog(`bot menu set with ${BUILTIN_COMMANDS.length} built-in commands`);
+  } catch (err) {
+    console.error(
+      `[telegram] failed to publish bot commands menu: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+}
+
+/**
+ * Render the discovered-skills list as a Telegram MarkdownV2 reply.
+ * Telegram auto-detects `/command` text and makes it tappable, so the
+ * user can launch any skill from the list with one tap. Falls back to a
+ * friendly empty-state if discovery turned up nothing.
+ */
+export async function formatSkillsListMessage(): Promise<string> {
   let discovered: DiscoveredCommand[];
   try {
     discovered = await discoverCommands();
@@ -216,44 +236,25 @@ export async function publishBotMenu(): Promise<void> {
     );
     discovered = [];
   }
-  const builtinNames = new Set(BUILTIN_COMMANDS.map((c) => c.command));
-  const cmds = [
-    ...BUILTIN_COMMANDS,
-    ...discovered.filter((c) => !builtinNames.has(c.command)),
-  ].slice(0, TELEGRAM_MAX_BOT_COMMANDS);
-  if (cmds.length === 0) {
-    console.error(`[telegram] no commands to publish to bot menu`);
-    return;
+  if (discovered.length === 0) {
+    return "No skills discovered. Try installing a Claude Code plugin or dropping a skill under `~/.claude/skills/`.";
   }
-
-  // Telegram's payload cap isn't documented; back off geometrically on
-  // BOT_COMMANDS_TOO_MUCH so we don't have to hand-tune the cap forever.
-  let attempt = cmds.slice();
-  for (let i = 0; i < 5 && attempt.length > 0; i++) {
-    try {
-      await bot.api.setMyCommands(attempt);
-      console.error(
-        `[telegram] published ${attempt.length}/${cmds.length} command(s) to bot menu: ${attempt
-          .slice(0, 5)
-          .map((c) => `/${c.command}`)
-          .join(" ")}${attempt.length > 5 ? " …" : ""}`,
-      );
-      dlog(`bot menu set with ${attempt.length} commands`);
-      return;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("BOT_COMMANDS_TOO_MUCH") || msg.includes("too long")) {
-        const next = Math.max(1, Math.floor(attempt.length * 0.6));
-        if (next === attempt.length) break;
-        dlog(`menu publish: ${attempt.length} too many, retry with ${next}`);
-        attempt = attempt.slice(0, next);
-        continue;
-      }
-      console.error(`[telegram] failed to publish bot commands menu: ${msg}`);
-      return;
-    }
+  // Telegram's hard limit is 4096 chars; MarkdownV2 escaping inflates
+  // that. Reserve headroom and tail-truncate with a "+N more" hint.
+  const TELEGRAM_MSG_BUDGET = 3500;
+  const header = "🛠 Available skills (tap to invoke):";
+  const lines = [header, ""];
+  let used = header.length + 1;
+  let shown = 0;
+  for (const c of discovered) {
+    const line = `/${c.command} — ${c.description}`;
+    if (used + line.length + 1 > TELEGRAM_MSG_BUDGET) break;
+    lines.push(line);
+    used += line.length + 1;
+    shown += 1;
   }
-  console.error(
-    `[telegram] gave up publishing bot menu after backoff (had ${cmds.length} candidates)`,
-  );
+  if (shown < discovered.length) {
+    lines.push("", `(+${discovered.length - shown} more — message budget hit)`);
+  }
+  return lines.join("\n");
 }
