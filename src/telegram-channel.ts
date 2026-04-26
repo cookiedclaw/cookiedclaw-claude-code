@@ -7,6 +7,12 @@
  * exposes a `reply` tool so CC can write back. CC handles everything else
  * (model, agent loop, history, tool calls).
  *
+ * Live tool progress: a localhost HTTP listener accepts POSTs from the
+ * `hooks/tool-progress.ts` PreToolUse / PostToolUse hook. As CC runs
+ * tools we edit a single Telegram message in place ("⏳ Bash: ls -la"
+ * → "✓ Bash: ls -la (120ms)"), so the user sees what's happening
+ * instead of staring at silence until the final reply lands.
+ *
  * Required env:
  *   TELEGRAM_BOT_TOKEN     — bot token from @BotFather
  *   TELEGRAM_ALLOWED_USERS — comma-separated Telegram user IDs allowed to
@@ -15,6 +21,7 @@
  *                            (NOT recommended — any sender becomes a prompt
  *                            injection vector).
  */
+import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -24,9 +31,10 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { Bot } from "grammy";
 
-// Try loading .env from the project root (parent of src/) regardless of how
-// CC spawned us. Bun auto-loads .env from process.cwd(), but CC's spawn cwd
-// isn't always our project root, so we explicitly hint at the right path.
+// -----------------------------------------------------------------------------
+// Env loading
+// -----------------------------------------------------------------------------
+
 const projectRoot = resolve(import.meta.dir, "..");
 const envPath = resolve(projectRoot, ".env");
 const envFile = Bun.file(envPath);
@@ -37,17 +45,13 @@ if (await envFile.exists()) {
     if (!m) continue;
     const [, key, rawValue] = m as unknown as [string, string, string];
     if (process.env[key]) continue;
-    const value = rawValue.replace(/^['"]|['"]$/g, "");
-    process.env[key] = value;
+    process.env[key] = rawValue.replace(/^['"]|['"]$/g, "");
   }
   console.error(`[telegram] loaded env from ${envPath}`);
 } else {
   console.error(`[telegram] no .env at ${envPath} (relying on shell env)`);
 }
 
-// Accept either TELEGRAM_BOT_TOKEN (matches the official Anthropic plugin's
-// convention) or the older TELEGRAM_API_TOKEN that previous cookiedclaw
-// versions used. Less friction for upgrade-in-place.
 const token =
   process.env.TELEGRAM_BOT_TOKEN ?? process.env.TELEGRAM_API_TOKEN;
 if (!token) {
@@ -79,6 +83,146 @@ if (!allowAll && allowedUsers.size === 0) {
   );
 }
 
+// -----------------------------------------------------------------------------
+// Per-chat state for live tool progress
+// -----------------------------------------------------------------------------
+
+type ToolEvent = {
+  toolUseId: string;
+  toolName: string;
+  inputSummary: string;
+  status: "running" | "done" | "error";
+  durationMs?: number;
+  errorText?: string;
+};
+
+type ChatState = {
+  /** Telegram message_id of the live progress block (we edit this in place). */
+  progressMessageId?: number;
+  events: ToolEvent[];
+};
+
+const chats = new Map<string, ChatState>();
+
+/**
+ * Hooks don't know which Telegram chat triggered the current CC turn — they
+ * only see `tool_name` / `tool_input`. We track "the chat CC is currently
+ * working on" by remembering the last inbound message's chat_id and resetting
+ * on each new inbound. Single-chat scenario is solid; multi-chat under one
+ * session can race, but for one user this is fine.
+ */
+let activeChatId: string | undefined;
+
+/** Per-chat serialized edit queue so concurrent hooks don't race Telegram API. */
+const editQueues = new Map<string, Promise<unknown>>();
+function queueEdit<T>(chatId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = editQueues.get(chatId) ?? Promise.resolve();
+  const next = prev.catch(() => {}).then(fn);
+  editQueues.set(
+    chatId,
+    next.catch(() => {}),
+  );
+  return next;
+}
+
+/** Skip `reply` (and its mcp__telegram__reply alias) — those are OUR final-output tool, not progress. */
+function isReplyTool(name: string): boolean {
+  return name === "reply" || /^mcp__[^_]+__reply$/.test(name);
+}
+
+function summarizeToolInput(name: string, input: unknown): string {
+  if (input && typeof input === "object") {
+    const obj = input as Record<string, unknown>;
+    // Common CC tools — pick the most informative single field.
+    if (name === "Bash" && typeof obj.command === "string") {
+      return clamp(obj.command, 90);
+    }
+    if (
+      (name === "Read" ||
+        name === "Edit" ||
+        name === "Write" ||
+        name === "NotebookEdit") &&
+      typeof obj.file_path === "string"
+    ) {
+      return obj.file_path;
+    }
+    if (name === "Glob" && typeof obj.pattern === "string") return obj.pattern;
+    if (name === "Grep" && typeof obj.pattern === "string") return obj.pattern;
+    if (name === "WebFetch" && typeof obj.url === "string") return obj.url;
+    if (name === "WebSearch" && typeof obj.query === "string") return obj.query;
+    if (name === "Agent" && typeof obj.subagent_type === "string") {
+      return `${obj.subagent_type}: ${typeof obj.prompt === "string" ? clamp(obj.prompt, 60) : ""}`;
+    }
+    // Generic: show the first short string-valued field, or compact JSON.
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v === "string" && v.length <= 90) return `${k}=${v}`;
+    }
+  }
+  const json = JSON.stringify(input ?? {});
+  return clamp(json, 90);
+}
+
+function clamp(s: string, n: number): string {
+  return s.length <= n ? s : s.slice(0, n - 1) + "…";
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60_000)}m${Math.floor((ms % 60_000) / 1000)}s`;
+}
+
+function renderProgress(events: ToolEvent[]): string {
+  if (events.length === 0) return "🔧 working…";
+  return events
+    .map((e) => {
+      const icon =
+        e.status === "running"
+          ? "⏳"
+          : e.status === "done"
+            ? "✓"
+            : "✗";
+      const dur = e.durationMs ? ` (${formatDuration(e.durationMs)})` : "";
+      const errPart = e.errorText ? ` — ${clamp(e.errorText, 80)}` : "";
+      return `${icon} ${e.toolName}: ${e.inputSummary}${dur}${errPart}`;
+    })
+    .join("\n");
+}
+
+/**
+ * Push the chat's current event list to Telegram — either send a fresh
+ * progress message (first tool of the turn) or edit the existing one in
+ * place. Best-effort; rate limits and "message not modified" errors are
+ * logged and swallowed so a flaky network never breaks the tool loop.
+ */
+async function pushProgress(chatId: string): Promise<void> {
+  const state = chats.get(chatId);
+  if (!state) return;
+  const text = renderProgress(state.events);
+  if (!text) return;
+  try {
+    if (state.progressMessageId !== undefined) {
+      await bot.api.editMessageText(
+        Number(chatId),
+        state.progressMessageId,
+        text,
+      );
+    } else {
+      const sent = await bot.api.sendMessage(Number(chatId), text);
+      state.progressMessageId = sent.message_id;
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes("message is not modified")) {
+      console.error(`[telegram] progress push failed: ${msg}`);
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// MCP server (channel + reply tool)
+// -----------------------------------------------------------------------------
+
 const mcp = new Server(
   { name: "telegram", version: "0.1.0" },
   {
@@ -87,7 +231,7 @@ const mcp = new Server(
       tools: {},
     },
     instructions:
-      "Telegram messages arrive as <channel source=\"telegram\" chat_id=\"...\" sender=\"...\">. " +
+      'Telegram messages arrive as <channel source="telegram" chat_id="..." sender="...">. ' +
       "To reply, call the `reply` tool with the chat_id from the tag and your message text. " +
       "The chat is private DM with one user — no need for /commands or @mentions in your reply. " +
       "Be conversational, concise, and ground claims in tool results when appropriate.",
@@ -129,8 +273,29 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     chat_id: string;
     text: string;
   };
+  // Drop the in-place progress message (its job is done) and send the
+  // reply as a fresh Telegram message so a clean log + the answer don't
+  // fight for the same bubble.
+  await queueEdit(chat_id, async () => {
+    const state = chats.get(chat_id);
+    if (state?.progressMessageId !== undefined) {
+      try {
+        await bot.api.deleteMessage(
+          Number(chat_id),
+          state.progressMessageId,
+        );
+      } catch (err) {
+        console.error(
+          `[telegram] couldn't delete progress message: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      state.progressMessageId = undefined;
+    }
+  });
   try {
     await bot.api.sendMessage(Number(chat_id), text);
+    // Reset the event list so the next turn starts clean.
+    chats.set(chat_id, { events: [] });
     return { content: [{ type: "text", text: "sent" }] };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -141,6 +306,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     };
   }
 });
+
+// -----------------------------------------------------------------------------
+// Telegram inbound → CC channel notification
+// -----------------------------------------------------------------------------
 
 bot.on("message:text", async (ctx) => {
   const sender = ctx.from;
@@ -156,6 +325,11 @@ bot.on("message:text", async (ctx) => {
     return;
   }
 
+  const chatId = String(chat.id);
+  // New turn: the current chat is whatever just spoke; reset progress.
+  activeChatId = chatId;
+  chats.set(chatId, { events: [] });
+
   const senderLabel =
     sender.username ??
     [sender.first_name, sender.last_name].filter(Boolean).join(" ") ??
@@ -166,11 +340,7 @@ bot.on("message:text", async (ctx) => {
       method: "notifications/claude/channel",
       params: {
         content: text,
-        meta: {
-          chat_id: String(chat.id),
-          sender_id: senderId,
-          sender: senderLabel,
-        },
+        meta: { chat_id: chatId, sender_id: senderId, sender: senderLabel },
       },
     });
   } catch (err) {
@@ -184,6 +354,113 @@ bot.catch((err) => {
   console.error(`[telegram] grammy error: ${err.message}`);
 });
 
+// -----------------------------------------------------------------------------
+// Localhost progress endpoint (called by hooks/tool-progress.ts)
+// -----------------------------------------------------------------------------
+
+type ProgressPayload = {
+  phase: "pre" | "post";
+  tool_name: string;
+  tool_use_id: string;
+  tool_input?: unknown;
+  duration_ms?: number;
+  is_error?: boolean;
+  error_text?: string;
+};
+
+async function handleProgress(p: ProgressPayload): Promise<void> {
+  if (isReplyTool(p.tool_name)) return; // skip our own reply tool
+  if (!activeChatId) return; // no inbound yet, nothing to attach to
+  const chatId = activeChatId;
+  const state = chats.get(chatId) ?? { events: [] };
+  chats.set(chatId, state);
+
+  if (p.phase === "pre") {
+    state.events.push({
+      toolUseId: p.tool_use_id,
+      toolName: p.tool_name,
+      inputSummary: summarizeToolInput(p.tool_name, p.tool_input),
+      status: "running",
+    });
+  } else {
+    const ev = state.events.find((e) => e.toolUseId === p.tool_use_id);
+    if (ev) {
+      ev.status = p.is_error ? "error" : "done";
+      ev.durationMs = p.duration_ms;
+      if (p.error_text) ev.errorText = p.error_text;
+    } else {
+      // post without a matching pre — shouldn't happen, but be defensive
+      state.events.push({
+        toolUseId: p.tool_use_id,
+        toolName: p.tool_name,
+        inputSummary: summarizeToolInput(p.tool_name, p.tool_input),
+        status: p.is_error ? "error" : "done",
+        durationMs: p.duration_ms,
+        errorText: p.error_text,
+      });
+    }
+  }
+
+  await queueEdit(chatId, () => pushProgress(chatId));
+}
+
+// Resolve the IPC dir hook + server agree on. Plugin-mode gives us
+// CLAUDE_PLUGIN_DATA; dev-mode falls back to ~/.cache/cookiedclaw.
+const dataDir =
+  process.env.CLAUDE_PLUGIN_DATA ??
+  resolve(process.env.HOME ?? "/tmp", ".cache", "cookiedclaw");
+mkdirSync(dataDir, { recursive: true });
+const portFile = resolve(dataDir, "progress.port");
+
+// Try a small range of ports so two channels on the same machine don't fight.
+const PROGRESS_PORT_BASE = 47291;
+let progressPort: number | undefined;
+for (let i = 0; i < 100; i++) {
+  const port = PROGRESS_PORT_BASE + i;
+  try {
+    Bun.serve({
+      port,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        if (req.method !== "POST") return new Response("method", { status: 405 });
+        try {
+          const body = (await req.json()) as ProgressPayload;
+          await handleProgress(body);
+          return new Response("ok");
+        } catch (err) {
+          console.error(
+            `[telegram] /progress error: ${err instanceof Error ? err.message : err}`,
+          );
+          return new Response("error", { status: 500 });
+        }
+      },
+    });
+    progressPort = port;
+    break;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes("EADDRINUSE")) {
+      console.error(`[telegram] failed to bind progress port ${port}: ${msg}`);
+      break;
+    }
+  }
+}
+
+if (progressPort !== undefined) {
+  await Bun.write(portFile, String(progressPort));
+  console.error(
+    `[telegram] progress endpoint http://127.0.0.1:${progressPort}/ (port written to ${portFile})`,
+  );
+} else {
+  console.error(
+    `[telegram] couldn't bind any progress port — tool log will be missing in chat`,
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Boot
+// -----------------------------------------------------------------------------
+
 await mcp.connect(new StdioServerTransport());
 console.error("[telegram] mcp connected, starting bot polling...");
 
@@ -195,3 +472,4 @@ void bot.start({
     );
   },
 });
+

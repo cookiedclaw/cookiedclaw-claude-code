@@ -31,17 +31,26 @@ Anyone not in `TELEGRAM_ALLOWED_USERS` gets dropped silently — without that al
 From this directory:
 
 ```bash
-claude --dangerously-load-development-channels server:telegram
+claude --plugin-dir . --dangerously-load-development-channels server:telegram
 ```
 
-CC starts, reads `.mcp.json`, spawns `src/telegram-channel.ts` over stdio, and the bot starts long-polling Telegram.
+`--plugin-dir .` registers cookiedclaw as a local plugin (so the Pre/PostToolUse hooks under `hooks/` are wired up — without this you still get the bot but no live tool progress).
 
-DM your bot. The message arrives in your CC terminal as a `<channel source="telegram" chat_id="..." sender="...">` event. CC works on it, calls the `reply` tool, and the response shows up in Telegram.
+`--dangerously-load-development-channels server:telegram` opts the Telegram MCP server in as a channel. The flag is required because we're not on the Anthropic-curated allowlist yet.
+
+DM your bot. The message arrives in your CC terminal as a `<channel source="telegram" chat_id="..." sender="...">` event. While CC runs tools you'll see a live message in Telegram update like:
+
+```
+⏳ Bash: ls -la
+✓ Read: /tmp/notes.md (45ms)
+⏳ WebFetch: https://...
+```
+
+When CC calls the `reply` tool, the progress message is deleted and replaced by the final answer.
 
 ## What's missing (next steps)
 
 - **Pairing flow** instead of manual env-var allowlist
-- **PreToolUse / PostToolUse hooks** that edit a Telegram progress message live, so you can watch CC work in the chat instead of seeing nothing until the final reply
 - **Onboarding skill** (`/cookiedclaw:setup`) to walk through fal.ai / Supermemory / Tavily key setup and wire up the matching MCP servers
 - **Multi-bot** for family members, each with their own background sub-agent and own context
 - **Image / file dispatch** with `[embed:path]` / `[file:path]` markers, ported from the previous standalone iteration
