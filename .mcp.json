@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "telegram": {
+    "cookiedclaw": {
       "command": "bun",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/src/telegram-channel.ts"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/src/channel.ts"]
     }
   }
 }

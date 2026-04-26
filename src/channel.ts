@@ -1,13 +1,18 @@
 #!/usr/bin/env bun
 /**
- * cookiedclaw Telegram channel — entry point.
+ * cookiedclaw channel — entry point.
  *
- * Acts as a Claude Code "channel" MCP server: forwards Telegram DMs into
- * the running CC session as `<channel source="telegram" ...>` events,
- * exposes `reply` / `react` / `pair` / `revoke_access` / `list_access`
- * tools, relays CC's permission prompts to Telegram with Allow/Deny
- * buttons, and edits a live tool-progress message in chat via
- * Pre/PostToolUse hooks → localhost endpoint.
+ * Acts as a Claude Code "channel" MCP server. Currently bridges
+ * Telegram DMs into the running CC session as `<channel
+ * source="cookiedclaw" ...>` events; future event types (cron,
+ * heartbeat, integration callbacks, …) will flow through the same
+ * channel keyed by `meta` discriminators.
+ *
+ * Today it: forwards Telegram messages, exposes `reply` / `react` /
+ * `pair` / `revoke_access` / `list_access` tools, relays CC's
+ * permission prompts to Telegram with Allow/Deny buttons, and edits a
+ * live tool-progress message in chat via Pre/PostToolUse hooks →
+ * localhost endpoint.
  *
  * This file is wiring only. Each concern lives in its own module:
  *   paths.ts         filesystem layout, dlog

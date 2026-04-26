@@ -104,7 +104,7 @@ claude --enable-auto-mode \
 ## How it works
 
 ```
-Telegram ─DM─►  src/telegram-channel.ts  ─MCP notifications/claude/channel─►  Claude Code
+Telegram ─DM─►  src/channel.ts  ─MCP notifications/claude/channel─►  Claude Code
                 (bun process, MCP server)                                          │
                        ▲                                                           │
                        │ ◄── reply / react / pair / revoke_access / list_access ◄──┘
@@ -119,7 +119,7 @@ Each box is a single-purpose module:
 
 | Module | Concern |
 |--------|---------|
-| `src/telegram-channel.ts` | Wiring entrypoint — imports the rest |
+| `src/channel.ts` | Wiring entrypoint — imports the rest |
 | `src/{paths,env,bot}.ts` | Filesystem layout, env loading, grammy bot singleton |
 | `src/{format,chat-state,access}.ts` | MarkdownV2, per-chat state, pair codes / allowlist |
 | `src/{attachments,progress}.ts` | Embed markers, file download, tool-progress rendering |

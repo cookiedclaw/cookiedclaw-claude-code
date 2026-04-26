@@ -1,6 +1,6 @@
 {
   "permissions": {
-    "allow": ["mcp__telegram"]
+    "allow": ["mcp__cookiedclaw"]
   },
   "hooks": {
     "PreToolUse": [

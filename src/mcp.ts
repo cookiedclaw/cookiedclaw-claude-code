@@ -11,7 +11,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const baseInstructions =
-  'Telegram messages arrive as <channel source="telegram" chat_id="..." sender="..." message_id="..." [attachment="/abs/path"]>. ' +
+  "This is the cookiedclaw channel — primarily Telegram inbound, but the same channel will eventually carry other event types (cron, heartbeat, integration callbacks, …). Identify the event by `meta` keys: a Telegram message has `meta.chat_id` + `meta.sender`; reactions add `meta.is_reaction`; callbacks add `meta.is_callback`; future event types will add their own marker.\n\n" +
+  'Telegram messages arrive as `<channel source="cookiedclaw" chat_id="..." sender="..." message_id="..." [attachment="/abs/path"]>`. ' +
   "To reply, call the `reply` tool with the chat_id from the tag and your message text. " +
   "The chat is private DM with one user — no need for /commands or @mentions in your reply. " +
   "Be conversational, concise, and ground claims in tool results when appropriate.\n\n" +
@@ -33,7 +34,7 @@ const baseInstructions =
   "Inline keyboard buttons: the `reply` tool accepts an optional `buttons` parameter — a 2D array of rows, each containing buttons with either `url` (open link) or `data` (callback to you). Use buttons when the response naturally branches: a yes/no question, a multi-choice prompt, or pagination of long results. Don't add buttons to every reply — they're noise when the conversation is freeform. When the user taps a `data` button, expect the next inbound to have `meta.is_callback=\"true\"` and the same `chat_id` / `message_id`.";
 
 export const mcp = new McpServer(
-  { name: "telegram", version: "0.1.0" },
+  { name: "cookiedclaw", version: "0.1.0" },
   {
     capabilities: {
       experimental: {

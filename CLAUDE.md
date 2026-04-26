@@ -6,7 +6,7 @@ This file is for hacking on cookiedclaw itself.
 
 ## Architecture summary
 
-- `src/telegram-channel.ts` — wiring entry point. Imports the rest as side effects.
+- `src/channel.ts` — wiring entry point. Imports the rest as side effects.
 - `src/{paths,env,bot,format,chat-state,access,attachments,progress,mcp,tools,inbound,permission-relay,progress-server,skill-discovery}.ts` — one concern per file.
 - `hooks/tool-progress.ts` — Pre/PostToolUse hook script.
 - `skills/setup/SKILL.md` — the `/cookiedclaw:setup` wizard. Writes a workspace's `CLAUDE.md`, `BOOTSTRAP.md`, `./.cookiedclaw/keys.env`.

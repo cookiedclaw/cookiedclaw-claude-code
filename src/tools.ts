@@ -1,6 +1,6 @@
 /**
  * Tool registrations on the McpServer: reply, react, pair, revoke_access,
- * list_access. Imported and called once from telegram-channel.ts; lives
+ * list_access. Imported and called once from channel.ts; lives
  * here to keep the entry point lean.
  */
 import { InlineKeyboard } from "grammy";

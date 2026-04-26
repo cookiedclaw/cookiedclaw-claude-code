@@ -3,7 +3,7 @@
  * (allowlist + pair-flow), forwarding to CC, and the /stop fast-path.
  *
  * Importing this module registers the bot.on handlers as a side effect.
- * No exports needed; telegram-channel.ts imports for side effects.
+ * No exports needed; channel.ts imports for side effects.
  */
 import {
   generatePairCode,
@@ -386,7 +386,7 @@ bot.on("message:document", async (ctx) => {
  * User reacted to a message with an emoji. We forward this to CC as a
  * channel notification so the agent can ack ("oh, they 👍'd my reply"
  * → maybe react back with 🙏, or use it as feedback signal). Requires
- * `message_reaction` in `allowed_updates` (set in telegram-channel.ts).
+ * `message_reaction` in `allowed_updates` (set in channel.ts).
  *
  * In private chats reactions only fire for the bot if `disable_notification`
  * isn't set on the source message — Telegram hides reactions on muted

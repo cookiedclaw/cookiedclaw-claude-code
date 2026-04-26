@@ -9,7 +9,7 @@
     "typescript": "^5"
   },
   "scripts": {
-    "channel": "bun ./src/telegram-channel.ts",
+    "channel": "bun ./src/channel.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
