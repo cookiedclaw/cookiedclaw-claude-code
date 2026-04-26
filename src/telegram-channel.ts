@@ -21,7 +21,7 @@
  *                            (NOT recommended — any sender becomes a prompt
  *                            injection vector).
  */
-import { mkdirSync } from "node:fs";
+import { appendFile, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -329,6 +329,7 @@ bot.on("message:text", async (ctx) => {
   // New turn: the current chat is whatever just spoke; reset progress.
   activeChatId = chatId;
   chats.set(chatId, { events: [] });
+  dlog(`inbound: chat=${chatId} sender=${senderId}`);
 
   const senderLabel =
     sender.username ??
@@ -369,8 +370,17 @@ type ProgressPayload = {
 };
 
 async function handleProgress(p: ProgressPayload): Promise<void> {
-  if (isReplyTool(p.tool_name)) return; // skip our own reply tool
-  if (!activeChatId) return; // no inbound yet, nothing to attach to
+  dlog(
+    `progress in: phase=${p.phase} tool=${p.tool_name} id=${p.tool_use_id} activeChat=${activeChatId ?? "none"}`,
+  );
+  if (isReplyTool(p.tool_name)) {
+    dlog(`  -> skipped (reply tool)`);
+    return;
+  }
+  if (!activeChatId) {
+    dlog(`  -> skipped (no active chat)`);
+    return;
+  }
   const chatId = activeChatId;
   const state = chats.get(chatId) ?? { events: [] };
   chats.set(chatId, state);
@@ -404,13 +414,26 @@ async function handleProgress(p: ProgressPayload): Promise<void> {
   await queueEdit(chatId, () => pushProgress(chatId));
 }
 
-// Resolve the IPC dir hook + server agree on. Plugin-mode gives us
-// CLAUDE_PLUGIN_DATA; dev-mode falls back to ~/.cache/cookiedclaw.
-const dataDir =
-  process.env.CLAUDE_PLUGIN_DATA ??
-  resolve(process.env.HOME ?? "/tmp", ".cache", "cookiedclaw");
+// IPC dir: hook + server have to agree. We deliberately DON'T use
+// CLAUDE_PLUGIN_DATA here — the channel server's process inherits
+// whatever env CC chose for *MCP servers*, while hooks get the env CC
+// chose for *hook commands*, and these aren't guaranteed equal. Fixing
+// the path to ~/.cache/cookiedclaw sidesteps the mismatch entirely and
+// makes the file easy to inspect for debugging (`cat ~/.cache/cookiedclaw/progress.port`).
+const dataDir = resolve(process.env.HOME ?? "/tmp", ".cache", "cookiedclaw");
 mkdirSync(dataDir, { recursive: true });
 const portFile = resolve(dataDir, "progress.port");
+const debugLog = resolve(dataDir, "progress.log");
+
+function dlog(line: string): void {
+  // Append-only diagnostic log shared with the hook script. Lets us see
+  // what's happening without depending on CC's debug-log toggle.
+  appendFile(
+    debugLog,
+    `[${new Date().toISOString()}] [server] ${line}\n`,
+    () => {},
+  );
+}
 
 // Try a small range of ports so two channels on the same machine don't fight.
 const PROGRESS_PORT_BASE = 47291;
@@ -451,10 +474,12 @@ if (progressPort !== undefined) {
   console.error(
     `[telegram] progress endpoint http://127.0.0.1:${progressPort}/ (port written to ${portFile})`,
   );
+  dlog(`server up on :${progressPort}, port file ${portFile}`);
 } else {
   console.error(
     `[telegram] couldn't bind any progress port — tool log will be missing in chat`,
   );
+  dlog(`server failed to bind any port`);
 }
 
 // -----------------------------------------------------------------------------

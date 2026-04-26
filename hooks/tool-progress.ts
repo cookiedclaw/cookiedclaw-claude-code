@@ -12,11 +12,30 @@
  *
  * Invocation: `bun .../hooks/tool-progress.ts pre|post`
  */
+import { appendFileSync } from "node:fs";
 import { resolve } from "node:path";
+
+// Same path as the channel server. We deliberately don't use
+// CLAUDE_PLUGIN_DATA — CC's hook env and MCP-server env aren't guaranteed
+// equal, and a fixed path sidesteps that mismatch.
+const dataDir = resolve(process.env.HOME ?? "/tmp", ".cache", "cookiedclaw");
+const portFile = resolve(dataDir, "progress.port");
+const debugLog = resolve(dataDir, "progress.log");
+
+function dlog(line: string): void {
+  try {
+    appendFileSync(
+      debugLog,
+      `[${new Date().toISOString()}] [hook] ${line}\n`,
+    );
+  } catch {
+    // best-effort
+  }
+}
 
 const phase = process.argv[2];
 if (phase !== "pre" && phase !== "post") {
-  console.error(`[tool-progress] expected 'pre' or 'post', got ${phase}`);
+  dlog(`bad phase arg: ${phase}`);
   process.exit(0); // never block CC — silent failure beats broken loop
 }
 
@@ -41,23 +60,26 @@ try {
   process.exit(0);
 }
 
-if (!event.tool_name || !event.tool_use_id) process.exit(0);
-
-const dataDir =
-  process.env.CLAUDE_PLUGIN_DATA ??
-  resolve(process.env.HOME ?? "/tmp", ".cache", "cookiedclaw");
-const portFile = resolve(dataDir, "progress.port");
+if (!event.tool_name || !event.tool_use_id) {
+  dlog(`missing tool_name or tool_use_id: ${JSON.stringify(event).slice(0, 200)}`);
+  process.exit(0);
+}
 
 let port: number | undefined;
 try {
   const s = (await Bun.file(portFile).text()).trim();
   port = Number(s);
   if (!Number.isFinite(port)) port = undefined;
-} catch {
-  // No port file = channel server not running; nothing to do.
+} catch (err) {
+  dlog(`no port file at ${portFile}: ${err instanceof Error ? err.message : err}`);
   process.exit(0);
 }
-if (!port) process.exit(0);
+if (!port) {
+  dlog(`port file existed but value invalid`);
+  process.exit(0);
+}
+
+dlog(`forwarding ${phase} ${event.tool_name} (id=${event.tool_use_id}) to :${port}`);
 
 // Detect tool errors from PostToolUse response. CC's tool_response shape
 // varies, but failures usually surface as `is_error: true` or a content
@@ -97,15 +119,16 @@ try {
   // Short timeout — we never want to slow the tool loop.
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 1500);
-  await fetch(`http://127.0.0.1:${port}/`, {
+  const res = await fetch(`http://127.0.0.1:${port}/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
     signal: ctl.signal,
   });
   clearTimeout(timer);
-} catch {
-  // Network blip / channel server down — drop the event silently.
+  dlog(`POST → ${res.status}`);
+} catch (err) {
+  dlog(`POST failed: ${err instanceof Error ? err.message : err}`);
 }
 
 process.exit(0);
