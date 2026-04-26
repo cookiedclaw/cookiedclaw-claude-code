@@ -75,11 +75,88 @@ const allowedUsers = new Set(
     .filter(Boolean),
 );
 
+// -----------------------------------------------------------------------------
+// Access management: env-based static allowlist + persistent paired users
+//                    + transient pairing requests
+// -----------------------------------------------------------------------------
+
+type PairedUser = { userId: number; name: string; addedAt: number };
+type PendingPair = {
+  code: string;
+  userId: number;
+  name: string;
+  expiresAt: number;
+};
+
+// We initialize accessFile after dataDir is set up below, but declare here.
+let accessFile = "";
+const pairedUsers = new Map<number, PairedUser>();
+/** Pending pair requests keyed by code (lowercased). */
+const pendingPairs = new Map<string, PendingPair>();
+
+const PAIR_TTL_MS = 10 * 60 * 1000;
+
+function generatePairCode(): string {
+  // Same alphabet as CC's permission relay codes: lowercase a-z minus 'l',
+  // so it never reads as '1'/'I' on a phone screen. 5 chars = ~12M codes,
+  // collision odds for the few pending requests we'll ever have are ~zero.
+  const alphabet = "abcdefghijkmnopqrstuvwxyz";
+  let code = "";
+  for (let i = 0; i < 5; i++) {
+    code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return code;
+}
+
+function reapPending(): void {
+  const now = Date.now();
+  for (const [code, p] of pendingPairs) {
+    if (p.expiresAt < now) pendingPairs.delete(code);
+  }
+}
+
+async function loadAccess(): Promise<void> {
+  try {
+    const text = await Bun.file(accessFile).text();
+    const data = JSON.parse(text) as { paired?: PairedUser[] };
+    for (const u of data.paired ?? []) pairedUsers.set(u.userId, u);
+    console.error(
+      `[telegram] loaded ${pairedUsers.size} paired user(s) from ${accessFile}`,
+    );
+  } catch {
+    // file doesn't exist yet — fine, fresh install
+  }
+}
+
+async function saveAccess(): Promise<void> {
+  await Bun.write(
+    accessFile,
+    JSON.stringify({ paired: [...pairedUsers.values()] }, null, 2),
+  );
+}
+
+function isAllowed(userId: number): boolean {
+  if (allowAll) return true;
+  if (allowedUsers.has(String(userId))) return true; // env bypass for owner
+  return pairedUsers.has(userId);
+}
+
+function senderDisplayName(sender: {
+  username?: string;
+  first_name?: string;
+  last_name?: string;
+  id: number;
+}): string {
+  if (sender.username) return `@${sender.username}`;
+  const full = [sender.first_name, sender.last_name].filter(Boolean).join(" ");
+  return full || String(sender.id);
+}
+
 if (!allowAll && allowedUsers.size === 0) {
   console.error(
-    "[telegram] TELEGRAM_ALLOWED_USERS is empty — every message will be dropped. " +
-      "Set it to a comma-separated list of Telegram user IDs (DM @userinfobot to find yours), " +
-      "or set it to `*` to disable the allowlist for testing.",
+    "[telegram] TELEGRAM_ALLOWED_USERS is empty — bot starts in pairing-only mode. " +
+      "Anyone who DMs the bot will get a code; ask Claude to `pair <code>` to approve them. " +
+      "(Or set TELEGRAM_ALLOWED_USERS=<your_user_id> for an env-based bypass.)",
   );
 }
 
@@ -100,7 +177,37 @@ type ChatState = {
   /** Telegram message_id of the live progress block (we edit this in place). */
   progressMessageId?: number;
   events: ToolEvent[];
+  /** Active "typing…" indicator handles, cleared on reply or failsafe. */
+  typing?: {
+    interval: ReturnType<typeof setInterval>;
+    failsafe: ReturnType<typeof setTimeout>;
+  };
 };
+
+/**
+ * Telegram's `sendChatAction("typing")` signal lasts ~5 seconds, so we
+ * refresh it every 4.5s while CC is working. Started on inbound and
+ * cleared by `reply` (or by a 5-minute failsafe if CC never replies).
+ */
+function startTyping(chatId: string): void {
+  const state = chats.get(chatId);
+  if (!state || state.typing) return;
+  const ping = () => {
+    bot.api.sendChatAction(Number(chatId), "typing").catch(() => {});
+  };
+  ping();
+  const interval = setInterval(ping, 4500);
+  const failsafe = setTimeout(() => stopTyping(chatId), 5 * 60 * 1000);
+  state.typing = { interval, failsafe };
+}
+
+function stopTyping(chatId: string): void {
+  const state = chats.get(chatId);
+  if (!state?.typing) return;
+  clearInterval(state.typing.interval);
+  clearTimeout(state.typing.failsafe);
+  state.typing = undefined;
+}
 
 const chats = new Map<string, ChatState>();
 
@@ -268,51 +375,190 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["chat_id", "text"],
       },
     },
+    {
+      name: "pair",
+      description:
+        "Approve a pending Telegram pairing request by its 5-letter code. When someone DMs the bot but isn't on the allowlist, the bot replies with a code and tells them to ask the owner. The owner relays the code here. After approval, that sender can message normally — the bot will start forwarding their messages into this session.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          code: {
+            type: "string",
+            description: "5-letter pairing code from the bot's reply (case-insensitive).",
+          },
+        },
+        required: ["code"],
+      },
+    },
+    {
+      name: "revoke_access",
+      description:
+        "Revoke a previously paired Telegram user's access. Their future messages will be dropped silently.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          user_id: {
+            type: "string",
+            description: "Telegram numeric user ID to revoke (find via `list_access`).",
+          },
+        },
+        required: ["user_id"],
+      },
+    },
+    {
+      name: "list_access",
+      description:
+        "List everyone with Telegram access right now: env-based static allowlist, paired runtime users, and any pending pairing requests still waiting for approval.",
+      inputSchema: { type: "object", properties: {} },
+    },
   ],
 }));
 
 const bot = new Bot(token);
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
-  if (req.params.name !== "reply") {
-    throw new Error(`unknown tool: ${req.params.name}`);
-  }
-  const { chat_id, text } = req.params.arguments as {
-    chat_id: string;
-    text: string;
-  };
-  // Drop the in-place progress message (its job is done) and send the
-  // reply as a fresh Telegram message so a clean log + the answer don't
-  // fight for the same bubble.
-  await queueEdit(chat_id, async () => {
-    const state = chats.get(chat_id);
-    if (state?.progressMessageId !== undefined) {
-      try {
-        await bot.api.deleteMessage(
-          Number(chat_id),
-          state.progressMessageId,
-        );
-      } catch (err) {
-        console.error(
-          `[telegram] couldn't delete progress message: ${err instanceof Error ? err.message : err}`,
-        );
+  const { name, arguments: args } = req.params;
+
+  if (name === "reply") {
+    const { chat_id, text } = args as { chat_id: string; text: string };
+    // CC is done thinking — drop the typing indicator before the bubble lands.
+    stopTyping(chat_id);
+    // Drop the in-place progress message (its job is done) and send the
+    // reply as a fresh Telegram message so a clean log + the answer don't
+    // fight for the same bubble.
+    await queueEdit(chat_id, async () => {
+      const state = chats.get(chat_id);
+      if (state?.progressMessageId !== undefined) {
+        try {
+          await bot.api.deleteMessage(
+            Number(chat_id),
+            state.progressMessageId,
+          );
+        } catch (err) {
+          console.error(
+            `[telegram] couldn't delete progress message: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+        state.progressMessageId = undefined;
       }
-      state.progressMessageId = undefined;
+    });
+    try {
+      await bot.api.sendMessage(Number(chat_id), text);
+      // Reset the event list so the next turn starts clean.
+      chats.set(chat_id, { events: [] });
+      return { content: [{ type: "text", text: "sent" }] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[telegram] reply failed (chat ${chat_id}): ${msg}`);
+      return {
+        content: [{ type: "text", text: `failed: ${msg}` }],
+        isError: true,
+      };
     }
-  });
-  try {
-    await bot.api.sendMessage(Number(chat_id), text);
-    // Reset the event list so the next turn starts clean.
-    chats.set(chat_id, { events: [] });
-    return { content: [{ type: "text", text: "sent" }] };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[telegram] reply failed (chat ${chat_id}): ${msg}`);
+  }
+
+  if (name === "pair") {
+    reapPending();
+    const code = String((args as { code: string }).code).toLowerCase().trim();
+    const pending = pendingPairs.get(code);
+    if (!pending) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `No pending pairing for code "${code}". Codes expire after 10 minutes — ask the user to DM the bot again to get a fresh one.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    pendingPairs.delete(code);
+    pairedUsers.set(pending.userId, {
+      userId: pending.userId,
+      name: pending.name,
+      addedAt: Date.now(),
+    });
+    await saveAccess();
+    // Tell the just-paired user they're approved so they don't have to guess.
+    try {
+      await bot.api.sendMessage(
+        pending.userId,
+        `✓ You're approved. Send me a message and I'll forward it to Claude.`,
+      );
+    } catch {
+      // best-effort
+    }
     return {
-      content: [{ type: "text", text: `failed: ${msg}` }],
-      isError: true,
+      content: [
+        {
+          type: "text",
+          text: `✓ Approved ${pending.name} (id ${pending.userId}). They can message the bot now.`,
+        },
+      ],
     };
   }
+
+  if (name === "revoke_access") {
+    const userIdStr = String((args as { user_id: string }).user_id).trim();
+    const userId = Number(userIdStr);
+    if (!Number.isFinite(userId)) {
+      return {
+        content: [{ type: "text", text: `user_id must be numeric, got "${userIdStr}"` }],
+        isError: true,
+      };
+    }
+    const had = pairedUsers.delete(userId);
+    if (had) await saveAccess();
+    return {
+      content: [
+        {
+          type: "text",
+          text: had
+            ? `Revoked user ${userId}. Their messages will be dropped.`
+            : `User ${userId} wasn't on the paired list (env-bypassed users can't be revoked here — edit TELEGRAM_ALLOWED_USERS instead).`,
+        },
+      ],
+    };
+  }
+
+  if (name === "list_access") {
+    reapPending();
+    const lines: string[] = [];
+    if (allowAll) {
+      lines.push("Static (env): ALL — TELEGRAM_ALLOWED_USERS=*");
+    } else if (allowedUsers.size > 0) {
+      lines.push(`Static (env): ${[...allowedUsers].join(", ")}`);
+    } else {
+      lines.push("Static (env): (none — pairing-only mode)");
+    }
+
+    if (pairedUsers.size > 0) {
+      lines.push("", `Paired (${pairedUsers.size}):`);
+      for (const u of pairedUsers.values()) {
+        const added = new Date(u.addedAt).toISOString().slice(0, 10);
+        lines.push(`  • ${u.name} — id ${u.userId} (added ${added})`);
+      }
+    } else {
+      lines.push("", "Paired: (none)");
+    }
+
+    if (pendingPairs.size > 0) {
+      lines.push("", "Pending pairing:");
+      for (const p of pendingPairs.values()) {
+        const minsLeft = Math.max(
+          0,
+          Math.round((p.expiresAt - Date.now()) / 60000),
+        );
+        lines.push(
+          `  • ${p.name} — id ${p.userId}, code ${p.code} (${minsLeft}m left)`,
+        );
+      }
+    }
+
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  }
+
+  throw new Error(`unknown tool: ${name}`);
 });
 
 // -----------------------------------------------------------------------------
@@ -326,23 +572,47 @@ bot.on("message:text", async (ctx) => {
   if (!sender) return;
 
   const senderId = String(sender.id);
-  if (!allowAll && !allowedUsers.has(senderId)) {
-    console.error(
-      `[telegram] dropped message from non-allowlisted user ${senderId} (${sender.username ?? sender.first_name ?? "?"})`,
+  const senderLabel = senderDisplayName(sender);
+
+  if (!isAllowed(sender.id)) {
+    // Issue or refresh a pairing code for this sender.
+    reapPending();
+    let pair = [...pendingPairs.values()].find(
+      (p) => p.userId === sender.id,
     );
+    if (!pair || pair.expiresAt <= Date.now()) {
+      pair = {
+        code: generatePairCode(),
+        userId: sender.id,
+        name: senderLabel,
+        expiresAt: Date.now() + PAIR_TTL_MS,
+      };
+      pendingPairs.set(pair.code, pair);
+    }
+    try {
+      await bot.api.sendMessage(
+        chat.id,
+        `Hi! Your access isn't approved yet.\n\n` +
+          `Ask the bot owner to run this in their Claude Code session:\n` +
+          `\`pair ${pair.code}\`\n\n` +
+          `(code expires in 10 min)`,
+        { parse_mode: "Markdown" },
+      );
+    } catch (err) {
+      console.error(
+        `[telegram] couldn't send pair instructions to ${senderId}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+    dlog(`pair issued: code=${pair.code} sender=${senderId}`);
     return;
   }
 
   const chatId = String(chat.id);
-  // New turn: the current chat is whatever just spoke; reset progress.
+  // New turn: the current chat is whatever just spoke; reset progress + start typing.
   activeChatId = chatId;
   chats.set(chatId, { events: [] });
+  startTyping(chatId);
   dlog(`inbound: chat=${chatId} sender=${senderId}`);
-
-  const senderLabel =
-    sender.username ??
-    [sender.first_name, sender.last_name].filter(Boolean).join(" ") ??
-    senderId;
 
   try {
     await mcp.notification({
@@ -432,6 +702,8 @@ const dataDir = resolve(process.env.HOME ?? "/tmp", ".cache", "cookiedclaw");
 mkdirSync(dataDir, { recursive: true });
 const portFile = resolve(dataDir, "progress.port");
 const debugLog = resolve(dataDir, "progress.log");
+accessFile = resolve(dataDir, "access.json");
+await loadAccess();
 
 function dlog(line: string): void {
   // Append-only diagnostic log shared with the hook script. Lets us see
@@ -469,8 +741,15 @@ for (let i = 0; i < 100; i++) {
     progressPort = port;
     break;
   } catch (err) {
+    // Bun's "port in use" error is a stringy "Failed to start server. Is
+    // port N in use?" — no EADDRINUSE token in the message. Sniff for any
+    // hint of port-in-use and retry; otherwise break out with the real cause.
     const msg = err instanceof Error ? err.message : String(err);
-    if (!msg.includes("EADDRINUSE")) {
+    const portTaken =
+      /EADDRINUSE/i.test(msg) ||
+      /in use/i.test(msg) ||
+      /address already in use/i.test(msg);
+    if (!portTaken) {
       console.error(`[telegram] failed to bind progress port ${port}: ${msg}`);
       break;
     }
