@@ -2,7 +2,7 @@
 name: setup
 description: Configure cookiedclaw integrations — fal.ai for image generation, Supermemory for long-term memory. Walks through API key setup and registers the matching MCP servers in Claude Code so they become available across all sessions (including via the Telegram bot).
 disable-model-invocation: true
-allowed-tools: Bash(claude mcp *) Bash(mkdir *) Bash(chmod *) Bash(test *) Read Write Edit WebSearch WebFetch
+allowed-tools: Bash(claude mcp *) Bash(claude plugin *) Bash(mkdir *) Bash(chmod *) Bash(test *) Bash(echo $SHELL) Read Write Edit WebSearch WebFetch
 ---
 
 # cookiedclaw onboarding wizard
@@ -76,10 +76,17 @@ Repeat this loop per integration. Stay focused, finish one before starting the n
 
 ### Supermemory
 
-1. Tell the user: *"Open https://supermemory.ai, sign up if you haven't, and copy your API key from the dashboard."*
-2. Wait for the key. Save to `~/.cookiedclaw/keys.env` as `SUPERMEMORY_API_KEY=<value>` (same pattern as above).
-3. Register MCP server. Look up the canonical package (Supermemory ships one — likely `@supermemory/mcp` or via their hosted endpoint). Confirm with the user before running.
-4. Confirm: *"Supermemory is set up. Memories will persist across sessions and across the Telegram bot."*
+Supermemory ships as a first-class CC plugin (not an MCP server) — it auto-injects context and auto-captures tool usage. **Requires a Supermemory Pro plan** (per their docs); mention that to the user before they sign up if they don't already have one.
+
+1. Tell the user: *"Open https://console.supermemory.ai/keys, create an API key (starts with `sm_`), and paste it here."*
+2. Wait for the key. Save to `~/.cookiedclaw/keys.env` as `SUPERMEMORY_CC_API_KEY=<value>` (for our records / future re-setup).
+3. Install Supermemory's official plugin (confirm with the user before running both):
+   ```
+   claude plugin marketplace add supermemoryai/claude-supermemory
+   claude plugin install claude-supermemory
+   ```
+4. The plugin reads `SUPERMEMORY_CC_API_KEY` from env when CC starts. Tell the user the cleanest way to make that persistent for them — usually adding `export SUPERMEMORY_CC_API_KEY=<value>` to their shell's rc file (`~/.zshrc`, `~/.bashrc`, etc., depending on `$SHELL`). Offer to detect their shell (`echo $SHELL`) and append if they want; otherwise just give them the line to paste themselves. Alternatively their plugin reads `~/.supermemory-claude/settings.json` — point at https://supermemory.ai/docs/integrations/claude-code if they prefer the file route.
+5. Confirm: *"Supermemory is set up. Restart your shell (so the env var is exported) and then Claude Code, and memories will persist across sessions — including via the Telegram bot."*
 
 ## Step 4 — Wrap up
 
