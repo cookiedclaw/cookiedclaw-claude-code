@@ -45,11 +45,12 @@ It's small enough to read in an afternoon (~2k LOC of TypeScript across 14 focus
 > [!IMPORTANT]
 > Prerequisites: [Bun](https://bun.sh), [Claude Code](https://code.claude.com) v2.1.80+ logged in with a **claude.ai** account (Console / API-key auth doesn't support channels), and a Telegram account.
 
+Install the plugin from this repo's custom marketplace:
+
 ```bash
-git clone git@github.com:cookiedclaw/cookiedclaw.git
-cd cookiedclaw
-bun install
-claude --dangerously-load-development-channels server:telegram
+claude plugin marketplace add cookiedclaw/cookiedclaw
+claude plugin install cookiedclaw@cookiedclaw
+claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
 ```
 
 Inside the CC session, run the onboarding wizard:
@@ -64,10 +65,27 @@ It walks you through:
 2. Optional integrations — fal.ai (image / video generation) and [Supermemory](https://supermemory.ai) (cross-session memory).
 3. A first-contact identity discovery: you tell the agent who you are and what to call it; it writes `IDENTITY.md` / `USER.md` / `SOUL.md` into `~/.cookiedclaw/`.
 
-Restart CC, DM your bot, and pair yourself with a code the bot replies with. From then on, you're talking to your CC session over Telegram.
+Restart CC with the same flag, DM your bot, and pair yourself with the code the bot replies with. From then on, you're talking to your CC session over Telegram.
+
+> [!NOTE]
+> The `--dangerously-load-development-channels` flag is required because cookiedclaw isn't on Anthropic's curated channel allowlist yet. It'll go away once the plugin is approved.
+
+<details>
+<summary>Developer setup (cloning the repo)</summary>
+
+If you're hacking on cookiedclaw itself, clone and run from the project directory instead of installing as a plugin:
+
+```bash
+git clone git@github.com:cookiedclaw/cookiedclaw.git
+cd cookiedclaw
+bun install
+claude --dangerously-load-development-channels server:telegram
+```
 
 > [!WARNING]
-> Don't pass `--plugin-dir .` for development. CC will register the same MCP server twice (once as project, once as plugin) and only one of them will be opted in as a channel — you'll end up with a working `reply` tool but no inbound message routing. The plugin manifest stays in the repo for the eventual marketplace publish.
+> Don't combine `--plugin-dir .` with this flow. CC will register the same MCP server twice (once as project, once as plugin) and only one will be opted in as a channel — you'll end up with a working `reply` tool but no inbound message routing.
+
+</details>
 
 ## How it works
 
@@ -120,8 +138,10 @@ Once configured, you usually want cookiedclaw running 24/7 — not tied to your 
 ```bash
 ssh -L 8080:localhost:8080 user@your-server   # one-time, port-forward for the OAuth flow
 claude /login                                  # browser auth — happens once
+claude plugin marketplace add cookiedclaw/cookiedclaw
+claude plugin install cookiedclaw@cookiedclaw
 tmux new -s cookied                            # start a named session
-claude --dangerously-load-development-channels server:telegram
+claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
 # Ctrl+b d  to detach — session keeps running, you can exit SSH
 ```
 

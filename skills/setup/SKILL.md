@@ -209,13 +209,14 @@ Summarize what got configured in one short list. Then:
   - `~/.cookiedclaw/{IDENTITY,USER,SOUL}.md` → continuity-of-self files, persist forever, edit any time (CC picks up changes on restart)
 - If they configured nothing (just looked around): say so cheerfully. `/cookiedclaw:setup` is always there.
 
-If you can detect this is a remote / headless setup (e.g. `$SSH_CONNECTION` is set, no `$DISPLAY`), also tell them how to keep cookiedclaw alive after they disconnect from SSH:
+If you can detect this is a remote / headless setup (e.g. `$SSH_CONNECTION` is set, no `$DISPLAY`), also tell them how to keep cookiedclaw alive after they disconnect from SSH. The flag they should re-launch CC with depends on how they installed cookiedclaw — marketplace install vs cloned repo (look at how they invoked CC for *this* session, or check `claude plugin list --json` for the `cookiedclaw` entry):
 
 ````
 For 24/7 runs, wrap CC in tmux so it survives SSH disconnects:
 
   tmux new -s cookied
-  claude --dangerously-load-development-channels server:telegram
+  claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
+  # (or `server:telegram` if you cloned the repo and run from its dir)
   # Ctrl+b d to detach — session keeps running
 
 Reattach later with `tmux attach -t cookied`. A server reboot kills the
