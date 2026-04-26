@@ -56,10 +56,19 @@ When CC calls the `reply` tool, the progress message is deleted and replaced by 
 
 Both the channel server and the hook script append diagnostic lines to `~/.cache/cookiedclaw/progress.log`. If something doesn't reach Telegram, that log usually shows where the chain broke (server didn't bind, hook couldn't find port, no active chat, etc.).
 
+## What works today
+
+- Telegram channel server (MCP + `claude/channel`) — DMs become `<channel>` events in CC
+- Reply tool with **MarkdownV2** rendering (CommonMark in, properly-escaped Telegram out via `telegramify-markdown`)
+- **Live tool progress** in the chat: a single message edits in place ("⏳ Bash: ls -la" → "✓ Bash: ls -la (45ms)") via Pre/PostToolUse hooks → localhost endpoint → editMessage
+- **Pairing flow** with persistent allowlist (`~/.cache/cookiedclaw/access.json`). Unknown DM gets a 5-letter code; owner approves via the `pair` MCP tool. Plus `revoke_access` and `list_access`. `TELEGRAM_ALLOWED_USERS` env still works as a static bypass.
+- **Permission relay** with inline buttons. CC's tool-approval prompts (Bash, Write, Edit) come to Telegram with `[✓ Allow]` / `[✗ Deny]`; tapping sends the verdict back. Local terminal dialog stays open in parallel — first answer wins.
+- **Typing indicator** while CC works
+- **Image / file dispatch** both directions: outbound via `[embed:path]` / `[file:path]` markers (auto-detect → photo or document, single-embed-with-caption fast path); inbound via `message:photo` / `message:document` handlers that download to inbox dir and surface the path via `meta.attachment` so CC can `Read` it (vision-aware for images)
+- **Bot menu** auto-populated from CC's discovered skills (user-level + project-level + every enabled plugin via `claude plugin list --json`); names normalized to Telegram's `[a-z0-9_]{1,32}` constraint, payload-cap backoff so we don't trip the undocumented `BOT_COMMANDS_TOO_MUCH`
+
 ## What's missing (next steps)
 
-- **Pairing flow** instead of manual env-var allowlist
-- **Onboarding skill** (`/cookiedclaw:setup`) to walk through fal.ai / Supermemory / Tavily key setup and wire up the matching MCP servers
-- **Multi-bot** for family members, each with their own background sub-agent and own context
-- **Image / file dispatch** with `[embed:path]` / `[file:path]` markers, ported from the previous standalone iteration
+- **Onboarding skill** (`/cookiedclaw:setup`) to walk through fal.ai / Supermemory key setup and wire up the matching MCP servers — the central piece of the consumer pivot
+- **Multi-bot** for family members, each with their own background sub-agent and own context (deferred — single-user MVP works first)
 - **Marketplace publish** so the `--plugin-dir`-free dev path becomes a one-line `/plugin install`

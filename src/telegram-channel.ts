@@ -305,17 +305,40 @@ function looksLikeImage(source: string, mediaType?: string): boolean {
   return IMAGE_EXT_RE.test(source);
 }
 
+/**
+ * Heuristic: does this marker payload actually look like a file path or
+ * URL we should attach? Catches cases where the model writes
+ * `[embed:path]` or `[file:filename]` as inline syntax explanation
+ * (e.g. when describing how the markers work) rather than as a real
+ * dispatch instruction.
+ *
+ * Treat as path-ish if it has any of:
+ *   - a directory separator (`/` or `\`)
+ *   - a leading `~` (home shorthand)
+ *   - an http(s):// prefix
+ *   - a file extension (3+ chars after a dot near the end)
+ */
+function looksLikeAttachmentSource(raw: string): boolean {
+  const s = raw.trim();
+  if (!s) return false;
+  if (s.startsWith("~") || s.includes("/") || s.includes("\\")) return true;
+  if (/^https?:\/\//i.test(s)) return true;
+  if (/\.[A-Za-z0-9]{1,8}$/.test(s)) return true;
+  return false;
+}
+
 function extractEmbeds(text: string): { embeds: Embed[]; cleaned: string } {
   const embeds: Embed[] = [];
-  for (const match of text.matchAll(EMBED_REGEX)) {
-    const kind = match[1] === "file" ? "file" : "auto";
-    const source = match[2]?.trim();
-    if (source) embeds.push({ kind, source });
-  }
-  // Strip markers and tidy whitespace so we don't leave double-newlines or
-  // trailing spaces where a marker used to live.
+  // Only consume markers that look real; leave unrecognized ones in the
+  // text so the user can still see them (and so we don't accidentally
+  // strip an explanatory `[embed:...]` from a doc-style answer).
   const cleaned = text
-    .replace(EMBED_REGEX, "")
+    .replace(EMBED_REGEX, (full, tag: string, src: string) => {
+      const source = src.trim();
+      if (!looksLikeAttachmentSource(source)) return full;
+      embeds.push({ kind: tag === "file" ? "file" : "auto", source });
+      return "";
+    })
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .replace(/^\s+|\s+$/g, "");
@@ -415,20 +438,14 @@ async function sendReply(
         await bot.api.sendDocument(chatId, file);
       }
     } catch (err) {
+      // Internal failure — log for our own debugging but DON'T pollute
+      // the chat with "(couldn't attach...)" notices. If the model wrote
+      // a bogus marker, the user shouldn't have to see our plumbing
+      // complain about it.
       console.error(
         `[telegram] embed dispatch failed (${embed.source}): ${err instanceof Error ? err.message : err}`,
       );
-      // Tell the user something went wrong with this specific attachment
-      // so they aren't left wondering where the file is.
-      try {
-        await bot.api.sendMessage(
-          chatId,
-          `(couldn't attach \`${embed.source}\`: ${err instanceof Error ? err.message : err})`,
-          { parse_mode: "Markdown" },
-        );
-      } catch {
-        // best-effort
-      }
+      dlog(`embed failed: ${embed.source}`);
     }
   }
 }
