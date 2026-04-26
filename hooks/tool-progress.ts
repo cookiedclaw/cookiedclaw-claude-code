@@ -40,7 +40,7 @@ function dlog(line: string): void {
 }
 
 const phase = process.argv[2];
-if (phase !== "pre" && phase !== "post") {
+if (phase !== "pre" && phase !== "post" && phase !== "stop") {
   dlog(`bad phase arg: ${phase}`);
   process.exit(0); // never block CC — silent failure beats broken loop
 }
@@ -51,44 +51,49 @@ try {
 } catch {
   process.exit(0);
 }
-if (!raw) process.exit(0);
 
+// stop phase has no tool — just signal turn-end to the channel server
+// so it can drop typing + clear pending chats authoritatively. Skip the
+// tool parsing path entirely.
 let event: {
   tool_name?: string;
   tool_use_id?: string;
   tool_input?: unknown;
   tool_response?: unknown;
   duration_ms?: number;
-};
-try {
-  event = JSON.parse(raw);
-} catch {
-  process.exit(0);
-}
-
-if (!event.tool_name || !event.tool_use_id) {
-  dlog(`missing tool_name or tool_use_id: ${JSON.stringify(event).slice(0, 200)}`);
-  process.exit(0);
-}
-
-// /stop abort: if the channel server has set stop.flag recently, block
-// every non-reply/react tool call so the agent physically can't keep
-// working. Reply/react still go through so it can acknowledge the stop.
-// Flag is cleared by forwardToCC on the next user inbound, or expires
-// after 5 minutes as a defense against orphaned flags.
-if (phase === "pre" && !isReplyOrReact(event.tool_name)) {
+} = {};
+if (phase !== "stop") {
+  if (!raw) process.exit(0);
   try {
-    const flagText = (await Bun.file(stopFlagPath).text()).trim();
-    const ts = Number(flagText);
-    if (Number.isFinite(ts) && Date.now() - ts < 5 * 60 * 1000) {
-      dlog(`/stop active — blocking ${event.tool_name}`);
-      console.error(
-        "User pressed /stop — abort the current task. Acknowledge with the `reply` or `react` tool, then end your turn. Do not run any further tools.",
-      );
-      process.exit(2);
-    }
+    event = JSON.parse(raw);
   } catch {
-    // No flag, proceed normally
+    process.exit(0);
+  }
+
+  if (!event.tool_name || !event.tool_use_id) {
+    dlog(`missing tool_name or tool_use_id: ${JSON.stringify(event).slice(0, 200)}`);
+    process.exit(0);
+  }
+
+  // /stop abort: if the channel server has set stop.flag recently, block
+  // every non-reply/react tool call so the agent physically can't keep
+  // working. Reply/react still go through so it can acknowledge the stop.
+  // Flag is cleared by forwardToCC on the next user inbound, or expires
+  // after 5 minutes as a defense against orphaned flags.
+  if (phase === "pre" && !isReplyOrReact(event.tool_name)) {
+    try {
+      const flagText = (await Bun.file(stopFlagPath).text()).trim();
+      const ts = Number(flagText);
+      if (Number.isFinite(ts) && Date.now() - ts < 5 * 60 * 1000) {
+        dlog(`/stop active — blocking ${event.tool_name}`);
+        console.error(
+          "User pressed /stop — abort the current task. Acknowledge with the `reply` or `react` tool, then end your turn. Do not run any further tools.",
+        );
+        process.exit(2);
+      }
+    } catch {
+      // No flag, proceed normally
+    }
   }
 }
 
@@ -106,7 +111,11 @@ if (!port) {
   process.exit(0);
 }
 
-dlog(`forwarding ${phase} ${event.tool_name} (id=${event.tool_use_id}) to :${port}`);
+dlog(
+  phase === "stop"
+    ? `forwarding stop to :${port}`
+    : `forwarding ${phase} ${event.tool_name} (id=${event.tool_use_id}) to :${port}`,
+);
 
 // Detect tool errors from PostToolUse response. CC's tool_response shape
 // varies, but failures usually surface as `is_error: true` or a content
@@ -132,15 +141,18 @@ if (isError && resp?.content) {
   }
 }
 
-const payload = {
-  phase,
-  tool_name: event.tool_name,
-  tool_use_id: event.tool_use_id,
-  tool_input: event.tool_input,
-  duration_ms: event.duration_ms,
-  is_error: isError,
-  error_text: errorText,
-};
+const payload =
+  phase === "stop"
+    ? { phase: "stop" as const }
+    : {
+        phase,
+        tool_name: event.tool_name,
+        tool_use_id: event.tool_use_id,
+        tool_input: event.tool_input,
+        duration_ms: event.duration_ms,
+        is_error: isError,
+        error_text: errorText,
+      };
 
 try {
   // Short timeout — we never want to slow the tool loop.

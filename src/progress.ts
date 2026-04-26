@@ -9,6 +9,7 @@ import {
   chats,
   pendingChats,
   queueEdit,
+  stopTyping,
   type ChatState,
   type ToolEvent,
 } from "./chat-state.ts";
@@ -144,15 +145,21 @@ export async function deleteProgressMessage(chatId: string): Promise<void> {
 // Hook event ingestion
 // -----------------------------------------------------------------------------
 
-export type ProgressPayload = {
-  phase: "pre" | "post";
-  tool_name: string;
-  tool_use_id: string;
-  tool_input?: unknown;
-  duration_ms?: number;
-  is_error?: boolean;
-  error_text?: string;
-};
+export type ProgressPayload =
+  | {
+      phase: "pre" | "post";
+      tool_name: string;
+      tool_use_id: string;
+      tool_input?: unknown;
+      duration_ms?: number;
+      is_error?: boolean;
+      error_text?: string;
+    }
+  | {
+      /** Turn-end signal from the Stop hook. No tool data — we just clear
+       * typing + drop the progress message + remove from pendingChats. */
+      phase: "stop";
+    };
 
 /**
  * Apply a single hook event to one chat's events list, then schedule
@@ -160,7 +167,10 @@ export type ProgressPayload = {
  * `post` (or pushes a standalone done/error if there's no match —
  * defensive for chats that joined pending mid-flight).
  */
-function applyEvent(state: ChatState, p: ProgressPayload): void {
+function applyEvent(
+  state: ChatState,
+  p: Extract<ProgressPayload, { phase: "pre" | "post" }>,
+): void {
   if (p.phase === "pre") {
     state.events.push({
       toolUseId: p.tool_use_id,
@@ -188,11 +198,32 @@ function applyEvent(state: ChatState, p: ProgressPayload): void {
 }
 
 /**
- * Top-level hook ingest. Skips our own `reply`/`react` tools (they're
- * the final output, not progress) and broadcasts to every chat in
- * `pendingChats`.
+ * Top-level hook ingest. Three phases:
+ *  - `stop`: agent ended its turn — drop typing, delete progress
+ *    message, clear pendingChats. This is the authoritative
+ *    "agent is done" signal.
+ *  - `pre` / `post`: tool progress event. Skips our own `reply`/`react`
+ *    tools (they're the final output, not progress) and broadcasts to
+ *    every chat in `pendingChats`.
  */
 export async function handleProgress(p: ProgressPayload): Promise<void> {
+  if (p.phase === "stop") {
+    dlog(
+      `stop hook fired — clearing pending=[${[...pendingChats].join(",") || "none"}]`,
+    );
+    const toClear = [...pendingChats];
+    pendingChats.clear();
+    for (const chatId of toClear) {
+      stopTyping(chatId);
+      void deleteProgressMessage(chatId);
+      const state = chats.get(chatId);
+      if (state) {
+        state.events = [];
+        state.progressMessageId = undefined;
+      }
+    }
+    return;
+  }
   dlog(
     `progress in: phase=${p.phase} tool=${p.tool_name} id=${p.tool_use_id} pending=[${[...pendingChats].join(",") || "none"}]`,
   );

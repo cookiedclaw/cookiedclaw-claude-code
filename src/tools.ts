@@ -12,11 +12,9 @@ import {
 } from "./access.ts";
 import { extractEmbeds, sendReply } from "./attachments.ts";
 import { bot } from "./bot.ts";
-import { chats, pendingChats, stopTyping } from "./chat-state.ts";
 import { allowAll, allowedUsers } from "./env.ts";
 import { sendFormatted } from "./format.ts";
 import { mcp } from "./mcp.ts";
-import { deleteProgressMessage } from "./progress.ts";
 
 // -----------------------------------------------------------------------------
 // reply
@@ -40,27 +38,15 @@ mcp.registerTool(
     },
   },
   async ({ chat_id, text }) => {
-    // CC is done thinking — drop the typing indicator before the bubble lands,
-    // and replace the in-place progress log with a fresh reply bubble.
-    stopTyping(chat_id);
-    await deleteProgressMessage(chat_id);
+    // Just send the bubble. Typing, progress message, and pendingChats
+    // cleanup are owned by the Stop hook now — that's the authoritative
+    // "agent is done" signal. If the agent calls reply mid-turn (e.g. an
+    // intermediate update) and then keeps working, typing should stay on
+    // and tools should keep fanning out, which only works if we don't
+    // tear state down here.
     try {
       const { embeds, cleaned } = extractEmbeds(text);
       await sendReply(Number(chat_id), cleaned, embeds);
-      // A second user message may have arrived during the await above and
-      // started a fresh typing interval. Stop again so we don't leak that
-      // interval when we reset state below. (Idempotent if nothing's running.)
-      stopTyping(chat_id);
-      // Turn done for this chat — drop from pending so further hook
-      // events stop fanning out to it. Reset events in place rather than
-      // replacing the state object so we don't orphan any typing reference
-      // a concurrent forwardToCC might still hold.
-      pendingChats.delete(chat_id);
-      const state = chats.get(chat_id);
-      if (state) {
-        state.events = [];
-        state.progressMessageId = undefined;
-      }
       const note =
         embeds.length > 0
           ? `sent (text + ${embeds.length} attachment${embeds.length === 1 ? "" : "s"})`
@@ -104,8 +90,6 @@ mcp.registerTool(
     },
   },
   async ({ chat_id, message_id, emoji }) => {
-    stopTyping(chat_id);
-    await deleteProgressMessage(chat_id);
     try {
       // grammy types `emoji` as a strict union of Telegram's allowed
       // literals; we accept any string from CC and let Telegram reject
@@ -115,15 +99,7 @@ mcp.registerTool(
           typeof bot.api.setMessageReaction
         >[2][number],
       ]);
-      // See `reply` — clear typing again in case a concurrent inbound
-      // started a fresh interval during the API await above.
-      stopTyping(chat_id);
-      pendingChats.delete(chat_id);
-      const state = chats.get(chat_id);
-      if (state) {
-        state.events = [];
-        state.progressMessageId = undefined;
-      }
+      // Typing and pendingChats cleanup are owned by the Stop hook.
       return { content: [{ type: "text", text: `reacted with ${emoji}` }] };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
