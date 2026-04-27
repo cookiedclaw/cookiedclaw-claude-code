@@ -124,12 +124,22 @@ set -euo pipefail
 WORKSPACE='${WORKSPACE}'
 SESSION='cookiedclaw'
 
+# systemd --user services start with a minimal PATH (just /usr/bin etc).
+# Bun lives in ~/.bun/bin, claude in ~/.local/bin (from the official
+# installer), and either could be missing from the inherited PATH.
+# Inject them up-front so MCP servers that shell out to \`bun\` or \`npx\`
+# don't fall over with "command not found".
+export PATH="\$HOME/.bun/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
 cd "\$WORKSPACE"
 
 # Tear down any stale tmux session from a prior run, then start fresh.
+# --continue restores the previous CC conversation so identity + recent
+# context survive the restart; identity files (IDENTITY/USER/SOUL) load
+# fresh on top of that as part of the normal session start.
 tmux kill-session -t "\$SESSION" 2>/dev/null || true
 tmux new-session -d -s "\$SESSION" \\
-  'claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw'
+  'claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw --continue'
 
 # Block while the tmux session is alive — systemd wants a long-running
 # foreground process. When the session dies (claude exits / crashes),
@@ -151,9 +161,12 @@ cat > "$HOME/.cookiedclaw/launcher.sh" <<EOF
 set -euo pipefail
 WORKSPACE='${WORKSPACE}'
 
+# See PATH note in the tmux variant — same reason.
+export PATH="\$HOME/.bun/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
 cd "\$WORKSPACE"
 exec script -qfc \\
-  'claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw' \\
+  'claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw --continue' \\
   /dev/null
 EOF
 
