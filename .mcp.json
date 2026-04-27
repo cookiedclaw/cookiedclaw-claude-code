@@ -4,7 +4,7 @@
       "type": "http",
       "url": "${COOKIEDCLAW_GATEWAY_URL:-http://127.0.0.1:47390}/mcp",
       "headers": {
-        "Authorization": "Bearer ${COOKIEDCLAW_GATEWAY_TOKEN}"
+        "Authorization": "Bearer ${COOKIEDCLAW_GATEWAY_TOKEN:-bootstrap-mode-run-cookiedclaw-setup}"
       }
     }
   }

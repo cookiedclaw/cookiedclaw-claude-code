@@ -26,7 +26,7 @@ systemctl --user show cookiedclaw --property=ActiveEnterTimestamp,MainPID,Restar
 journalctl --user -u cookiedclaw --no-pager -n 15
 ```
 
-The `Environment=WORKSPACE=…` line in `systemctl show` output is set by the unit (see `enable-daemon` Step 5). Parse it out for display.
+The `Environment=WORKSPACE=…` line in `systemctl show` output is set by the unit (see `setup` Step 4h). Parse it out for display.
 
 ## How to present
 
@@ -46,7 +46,7 @@ last 15 log lines:
   …
 ```
 
-If the unit doesn't exist (`is-active` returns "inactive" + `is-enabled` returns "disabled"), tell the user the daemon isn't set up — point at `/cookiedclaw:enable-daemon`.
+If the unit doesn't exist (`is-active` returns "inactive" + `is-enabled` returns "disabled"), tell the user the daemon isn't set up — point at `/cookiedclaw:setup`.
 
 If it's `failed` or `activating (auto-restart)`, surface the journal tail prominently — that's where the cause shows up. Don't try to diagnose; show the data and let the user decide.
 

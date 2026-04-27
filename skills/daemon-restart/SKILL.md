@@ -1,6 +1,6 @@
 ---
 name: daemon-restart
-description: Restart the cookiedclaw Claude Code session via its systemd user unit. Use after installing a new skill / plugin / MCP server (anything that's only discovered at startup), or when the agent itself asks to be reborn. Requires `/cookiedclaw:enable-daemon` to have been run first.
+description: Restart the cookiedclaw Claude Code session via its systemd user unit. Use after installing a new skill / plugin / MCP server (anything that's only discovered at startup), or when the agent itself asks to be reborn. Requires `/cookiedclaw:setup` to have been run first.
 allowed-tools: Bash(setsid bash -c *) Bash(systemctl --user is-active cookiedclaw) Bash(systemctl --user status cookiedclaw --no-pager)
 ---
 
@@ -16,7 +16,7 @@ Confirm the daemon mode is set up:
 systemctl --user is-active cookiedclaw
 ```
 
-If this prints anything other than `active`, the daemon isn't running and there's nothing to restart. Tell the user to run `/cookiedclaw:enable-daemon` first.
+If this prints anything other than `active`, the daemon isn't running and there's nothing to restart. Tell the user to run `/cookiedclaw:setup` first.
 
 ## Warn the user, then restart
 

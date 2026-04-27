@@ -184,22 +184,16 @@ tmux attach -t cookied
 > [!NOTE]
 > A server reboot kills the tmux session — you'll need to `tmux new` and start CC again. If you want auto-start-on-boot and auto-restart-on-crash, wrap this in a systemd `--user` unit.
 
-## Going daemon (Linux)
+## Going daemon
 
-Once you're tired of `tmux attach` and want cookiedclaw to survive reboots, crashes, and even let the agent restart itself from chat, run the wizard from inside your workspace:
+`/cookiedclaw:setup` is the one-shot wizard that handles **everything**: workspace files, Telegram bot token, GATEWAY_TOKEN generation, gateway binary download (from latest GitHub release), checksum verification, two `systemd --user` units (gateway + CC daemon), linger, and how to start it. Linux only for the daemon part — macOS / BSD users get a tmux fallback.
 
-```
-/cookiedclaw:enable-daemon
-```
-
-It writes a `systemd --user` unit + a tmux launcher (or `script(1)` fallback), enables linger so the service runs without a logged-in shell, refuses to overwrite an existing daemon from a different workspace, and tells you exactly how to switch over from your current ad-hoc launch (don't auto-start — that would 409-collide with the live session polling the same bot token).
-
-After the switch:
+After setup:
 
 - **`/cookiedclaw:daemon-restart`** — Cookie restarts the whole CC session via systemd, no terminal access needed. Useful after installing a new MCP / plugin / skill that's only discovered at startup.
 - **`/cookiedclaw:daemon-status`** — quick health check (active / enabled / pid / last restart / journal tail). Use before assuming the daemon is healthy.
 - **`/cookiedclaw:install-skill <package>`** — installs a skill via [skills.sh](https://skills.sh) and restarts cookiedclaw automatically so it's immediately available.
-- Live debug: `tmux attach -t cookiedclaw`. Logs: `journalctl --user -fu cookiedclaw`. Roll back: `systemctl --user disable --now cookiedclaw`.
+- Live debug: `tmux attach -t cookiedclaw`. Logs: `journalctl --user -fu cookiedclaw cookiedclaw-gateway`. Roll back: `systemctl --user disable --now cookiedclaw cookiedclaw-gateway`.
 
 > [!WARNING]
 > `/cookiedclaw:install-skill` runs `npx skills add <pkg>` under the hood, which executes arbitrary code from third-party repos. The agent picks high-install-count packages from trusted sources (`vercel-labs`, `anthropics`, `obra`, …) but there's no signature check. Treat unfamiliar package names with the same caution you'd apply to `curl | bash`.

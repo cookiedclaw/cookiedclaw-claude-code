@@ -1,6 +1,6 @@
 ---
 name: install-skill
-description: Install an agent skill from skills.sh (or any GitHub repo) into the user-global skills directory and restart the cookiedclaw daemon so the new skill becomes discoverable. Use when the user says "install skill X", "add the foo skill", or "поставь скилл на bar". Requires daemon mode enabled (`/cookiedclaw:enable-daemon`).
+description: Install an agent skill from skills.sh (or any GitHub repo) into the user-global skills directory and restart the cookiedclaw daemon so the new skill becomes discoverable. Use when the user says "install skill X", "add the foo skill", or "поставь скилл на bar". Requires daemon mode enabled (`/cookiedclaw:setup`).
 allowed-tools: Bash(npx --yes skills add *) Bash(npx --yes skills find *) Bash(systemctl --user is-active cookiedclaw) Bash(ls -la *) Bash(setsid bash -c *) Read
 ---
 
@@ -19,7 +19,7 @@ Confirm the daemon is up — restart only works if it's already running under sy
 systemctl --user is-active cookiedclaw
 ```
 
-If not `active`, tell the user to run `/cookiedclaw:enable-daemon` first. Without daemon mode, you can install the skill but the user has to restart CC manually.
+If not `active`, tell the user to run `/cookiedclaw:setup` first. Without daemon mode, you can install the skill but the user has to restart CC manually.
 
 ## Pick the skill
 
@@ -76,5 +76,5 @@ For now, the daemon's `Restart=always` policy means it'll come back up within a 
 ## Failure modes
 
 - **Install errored** — show the npx output, do not restart. Skill state is unchanged.
-- **Daemon not active** — install but skip restart. Tell the user the skill is on disk; they need to restart CC manually (or run `/cookiedclaw:enable-daemon` to switch to daemon mode going forward).
+- **Daemon not active** — install but skip restart. Tell the user the skill is on disk; they need to restart CC manually (or run `/cookiedclaw:setup` to switch to daemon mode going forward).
 - **Restart succeeded but skill still not visible after restart** — most likely a name mismatch (the SKILL.md `name:` field differs from the directory name). Tell the user to check `~/.agents/skills/<dir>/SKILL.md` frontmatter.
