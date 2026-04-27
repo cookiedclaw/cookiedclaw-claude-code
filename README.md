@@ -188,15 +188,21 @@ Once you're tired of `tmux attach` and want cookiedclaw to survive reboots, cras
 /cookiedclaw:enable-daemon
 ```
 
-It writes a `systemd --user` unit + a tmux launcher, enables linger so the service runs without a logged-in shell, and tells you exactly how to switch over from your current ad-hoc launch (don't auto-start — that would collide with the live session polling the same bot token).
+It writes a `systemd --user` unit + a tmux launcher (or `script(1)` fallback), enables linger so the service runs without a logged-in shell, refuses to overwrite an existing daemon from a different workspace, and tells you exactly how to switch over from your current ad-hoc launch (don't auto-start — that would 409-collide with the live session polling the same bot token).
 
 After the switch:
 
-- **`/cookiedclaw:restart`** — Cookie restarts the whole CC session via systemd, no terminal access needed. Useful after installing a new MCP / plugin / skill that's only discovered at startup.
+- **`/cookiedclaw:daemon-restart`** — Cookie restarts the whole CC session via systemd, no terminal access needed. Useful after installing a new MCP / plugin / skill that's only discovered at startup.
+- **`/cookiedclaw:daemon-status`** — quick health check (active / enabled / pid / last restart / journal tail). Use before assuming the daemon is healthy.
 - **`/cookiedclaw:install-skill <package>`** — installs a skill via [skills.sh](https://skills.sh) and restarts cookiedclaw automatically so it's immediately available.
 - Live debug: `tmux attach -t cookiedclaw`. Logs: `journalctl --user -fu cookiedclaw`. Roll back: `systemctl --user disable --now cookiedclaw`.
 
+> [!WARNING]
+> `/cookiedclaw:install-skill` runs `npx skills add <pkg>` under the hood, which executes arbitrary code from third-party repos. The agent picks high-install-count packages from trusted sources (`vercel-labs`, `anthropics`, `obra`, …) but there's no signature check. Treat unfamiliar package names with the same caution you'd apply to `curl | bash`.
+
 This stays a Claude Code plugin — the agent still runs *inside* a real CC session. The systemd wrapper is just keep-alive + remote-restart plumbing around it.
+
+Multi-workspace daemons (one per workspace) need a templated unit (`cookiedclaw@<name>.service` with `WorkingDirectory=%i`). That's a follow-up; today the wizard handles a single workspace and explicitly refuses to overwrite an existing one from elsewhere.
 
 ## Roadmap
 
