@@ -1,19 +1,26 @@
 ---
 name: setup
-description: First-run setup for cookiedclaw — wires the current working directory as a self-contained agent workspace. Writes CLAUDE.md (system prompt), BOOTSTRAP.md (first-contact discovery), and ./.cookiedclaw/keys.env (bot token). Each workspace = one independent agent. For optional integrations like fal.ai or Supermemory, see the standalone /cookiedclaw:fal-setup and /cookiedclaw:supermemory-setup skills.
+description: One-click cookiedclaw setup — wires the current working directory as a self-contained agent workspace, downloads the gateway binary, writes systemd units, and gets the user one `systemctl start` away from a fully running daemon. Telegram bot token + identity files + Bearer-auth gateway + auto-restart. Runs from inside the workspace directory; idempotent on re-run.
 disable-model-invocation: true
-allowed-tools: Bash(mkdir *) Bash(chmod *) Bash(test *) Bash(pwd) Bash(ls *) Read Write Edit
+allowed-tools: Bash(mkdir -p *) Bash(chmod 600 *) Bash(chmod 700 *) Bash(test *) Bash(pwd) Bash(ls *) Bash(uname *) Bash(command -v *) Bash(loginctl enable-linger *) Bash(loginctl show-user *) Bash(systemctl --user daemon-reload) Bash(systemctl --user enable *) Bash(systemctl --user is-active *) Bash(systemctl --user is-enabled *) Bash(id -un) Bash(getent passwd *) Bash(ps -e -o *) Bash(awk *) Bash(wc -l) Bash(curl -fsSL *) Bash(curl -fsSLo *) Bash(sha256sum *) Bash(openssl rand *) Bash(grep -q *) Bash(echo *) Read Write Edit
 ---
 
 # cookiedclaw onboarding wizard
 
-You are walking the user through setting up cookiedclaw **in the current working directory**. Each workspace is a self-contained agent: own bot token, own identity, own pairing list. The user can have multiple agents by running this skill from different directories.
+You are walking the user through one-click cookiedclaw setup in the **current working directory**. End state:
 
-This is the **core** wizard — just the Telegram bot token plus the workspace files needed for the agent to know itself and use the channel. Optional integrations (fal.ai, Supermemory) are separate skills the user can invoke later (`/cookiedclaw:fal-setup`, `/cookiedclaw:supermemory-setup`) without re-running this whole flow.
+- Workspace files (`CLAUDE.md`, `BOOTSTRAP.md`, `./.cookiedclaw/keys.env`) written.
+- `TELEGRAM_BOT_TOKEN` + `COOKIEDCLAW_GATEWAY_TOKEN` saved to `keys.env`, chmod 600.
+- Gateway binary downloaded from latest GitHub release, checksum-verified, in `~/.cookiedclaw/bin/`.
+- Two `systemd --user` units (`cookiedclaw-gateway.service` + `cookiedclaw.service`) written and enabled.
+- `loginctl enable-linger` confirmed.
+- The user is one `systemctl --user start cookiedclaw-gateway cookiedclaw` away from a running daemon.
 
-You write three files into the workspace root: `CLAUDE.md` (system prompt CC auto-loads), `BOOTSTRAP.md` (first-contact identity discovery), and `./.cookiedclaw/keys.env` (the token).
+The whole thing is **one slash command** — there's no follow-up `enable-daemon` skill to invoke. Each workspace = one independent agent (own bot, own identity, own paired users). For multi-workspace, rerun this skill from a different empty directory.
 
-Be conversational. Ask one thing at a time. Never paste API keys or tokens back to the user — they typed them, treat them as secrets. Don't echo them in confirmations.
+Be conversational. Ask one thing at a time. Never paste API keys or tokens back to the user — they typed (or generated) them; treat as secrets. Don't echo them in confirmations.
+
+This wizard is idempotent. On re-run it skips steps already done (token already in keys.env, identity files already written, systemd units already pointing at this workspace). If existing units point at a *different* workspace, it aborts rather than silently overwriting.
 
 ## Step 0 — Greet and confirm workspace
 
@@ -46,33 +53,41 @@ Before anything else, send this greeting:
 Hey! I'm your cookiedclaw setup helper.
 
 cookiedclaw is **per-workspace** — the directory you're in right now will become a self-contained agent (own Telegram bot, own identity, own paired users). If you want multiple agents (e.g. a personal one and a work one), just rerun `/cookiedclaw:setup` from a different directory later.
+
+This walks through:
+  1. Telegram bot token (BotFather)
+  2. Identity files (CLAUDE.md, BOOTSTRAP.md)
+  3. Gateway binary install + systemd daemon setup
+  4. How to start it
 ````
 
-Run `pwd` and tell the user the absolute path. If it looks like they're in their home directory, a code repo, or somewhere unexpected — gently flag it and use `AskUserQuestion`:
+Run `pwd` and tell the user the absolute path. If it looks like home directory, a code repo, or somewhere unexpected — gently flag it and use `AskUserQuestion`:
 
 - **Question**: "I'll set up cookiedclaw in `<pwd>`. Is that the right place, or would you like to use a dedicated directory like `~/cookiedclaw/`?"
 - **Options**:
   - `Use this directory — proceed`
-  - `Make a fresh ~/cookiedclaw/ and use that` (you can `mkdir -p ~/cookiedclaw && cd ~/cookiedclaw` only if the user picks this — but if they pick this, you can't actually `cd` for them; tell them to exit, do the cd, and rerun the skill)
+  - `Make a fresh ~/cookiedclaw/ and use that` — tell them to exit, `cd`, and rerun the skill
   - `I'll pick a different path — let me exit and rerun from there`
 
-If the path looks fine (an empty / dedicated directory) — skip the question and proceed.
+If the path is fine (an empty / dedicated directory) — skip the question and proceed.
 
 ## Step 1 — Survey current state (no questions yet)
 
-Read `./.cookiedclaw/keys.env` if it exists. Note presence of `TELEGRAM_BOT_TOKEN` (or legacy `TELEGRAM_API_TOKEN`).
+Read `./.cookiedclaw/keys.env` if it exists. Note presence of `TELEGRAM_BOT_TOKEN` (or legacy `TELEGRAM_API_TOKEN`) and `COOKIEDCLAW_GATEWAY_TOKEN`.
 
 Tell the user the current state in one or two sentences. Examples:
-- *"Looks like nothing's configured yet — let's start with the Telegram bot."*
-- *"Telegram bot is already set up. Want to re-do anything, or are we just here for the workspace files?"*
 
-## Step 2 — REQUIRED: Telegram bot token
+- *"Looks like nothing's configured yet — let's start with the Telegram bot."*
+- *"Bot token already saved. I'll skip ahead to the gateway install."*
+- *"Everything's already configured — re-running this just verifies and ensures the daemon is up to date."*
+
+## Step 2 — Telegram bot token
 
 Skip this step entirely if `TELEGRAM_BOT_TOKEN` (or `TELEGRAM_API_TOKEN`) is already in `./.cookiedclaw/keys.env`.
 
 Otherwise:
 
-1. Tell the user: *"First, the Telegram bot token. This is the one thing cookiedclaw can't run without."*
+1. *"First, the Telegram bot token. This is the one thing cookiedclaw can't run without."*
 2. Walk them through @BotFather:
    - Open Telegram, search for `@BotFather`
    - Send `/newbot`
@@ -85,11 +100,11 @@ Otherwise:
    - `mkdir -p ./.cookiedclaw` first
    - If file already has a `TELEGRAM_BOT_TOKEN=` or `TELEGRAM_API_TOKEN=` line, replace it; otherwise append
    - `chmod 600 ./.cookiedclaw/keys.env`
-5. Tell the user: *"Token saved. The bot won't actually start polling until cookiedclaw restarts — we'll do that at the end."*
+5. *"Token saved."* Don't echo it back.
 
-## Step 3 — Write the workspace files
+## Step 3 — Workspace files (CLAUDE.md + BOOTSTRAP.md)
 
-This is the heart of the setup. Three files, all in the **current working directory** (workspace root). Use `Write` for each.
+This is the heart of agent configuration. Two files in the workspace root.
 
 ### 3a. `CLAUDE.md` — system prompt CC auto-loads
 
@@ -98,7 +113,7 @@ CC reads `CLAUDE.md` from the working directory at every session start and injec
 ````markdown
 # cookiedclaw — workspace agent
 
-You're running as **cookiedclaw**, a Telegram-resident AI agent. This workspace IS your home: identity, memory, paired users, downloaded attachments — all live here. The user runs Claude Code from this directory and your channel server bridges Telegram into the session.
+You're running as **cookiedclaw**, a Telegram-resident AI agent. This workspace IS your home: identity, memory, paired users, downloaded attachments — all live here. The user runs Claude Code from this directory and the cookiedclaw gateway bridges Telegram into the session.
 
 ## Who you are
 
@@ -113,7 +128,7 @@ If none of those exist yet, the user is in mid-setup. Be friendly, suggest finis
 
 ## How replies work
 
-Telegram messages arrive as `<channel source="telegram" chat_id="..." sender="..." message_id="...">` events. Reply with the **`reply` tool** (printing to terminal is invisible to the user). Markdown is rendered (channel converts CommonMark → MarkdownV2).
+Telegram messages arrive as `<channel source="cookiedclaw" chat_id="..." sender="..." message_id="...">` events. Reply with the **`reply` tool** (printing to terminal is invisible to the user). Markdown is rendered (channel converts CommonMark → MarkdownV2).
 
 - **Reactions** — short ack-style messages ("thanks", "got it", "ok", "👍") get a `react` tool call with a fitting emoji from Telegram's allowed list (👍 ❤️ 🙏 🔥 🎉 etc.) instead of generating a text reply.
 - **Attachments outbound** — include `[embed:<path>]` or `[file:<path>]` markers in your reply text. `embed` auto-detects (image MIMEs → photo, otherwise document). `file` always goes as a document. URLs work too.
@@ -133,10 +148,10 @@ When inbound starts with `/<cmd>`, the user tapped a command from the bot's menu
 
 ## State paths in this workspace
 
-- `./.cookiedclaw/keys.env` — bot token + integration API keys (chmod 600). Don't echo values back to the user.
+- `./.cookiedclaw/keys.env` — bot token + GATEWAY_TOKEN + integration API keys (chmod 600). Don't echo values back to the user.
 - `./.cookiedclaw/access.json` — paired Telegram users (manage via `pair` / `revoke_access` / `list_access` tools, don't edit by hand).
 - `./.cookiedclaw/inbox/` — downloaded telegram attachments.
-- `./.cookiedclaw/cache/progress.log` — diagnostic log shared between channel server and Pre/PostToolUse hooks.
+- `./.cookiedclaw/cache/progress.log` — diagnostic log shared between gateway and Pre/PostToolUse hooks.
 ````
 
 If a workspace `CLAUDE.md` already exists, ask via `AskUserQuestion` whether to overwrite, append a `cookiedclaw` section, or skip (user knows what they're doing).
@@ -188,56 +203,295 @@ Per https://soul.md/. Narrative/essay style, first-person. Cover values (e.g. ho
 Run `bash rm ./BOOTSTRAP.md` so this script doesn't fire again. From the next session onward, IDENTITY/USER/SOUL.md (read at session start) carry the context.
 ````
 
-### 3c. `./.cookiedclaw/keys.env`
+## Step 4 — Daemon installation (Linux only)
 
-Already written in Step 2. Just confirm `chmod 600` is set.
+This is the operational half: gateway binary, systemd units, linger. After this the user is one `systemctl start` from a running cookiedclaw.
 
-## Step 4 — Wrap up
+### 4a. Pre-flight
 
-Summarize what got configured (workspace path, files written). Then:
+```bash
+uname -s                         # Expect Linux. macOS/other → see Step 4z below.
+command -v systemctl             # systemd
+command -v tmux                  # preferred TTY wrapper
+command -v script                # script(1) fallback if no tmux
+command -v curl                  # binary download
+command -v openssl               # GATEWAY_TOKEN generation
+command -v sha256sum             # binary verification
+```
 
-> [!IMPORTANT]
-> **Setup configures identity + keys, but the bot can't actually answer DMs yet.** The cookiedclaw gateway (the always-on Telegram poller + MCP server) hasn't been installed. The very next step the user should take is:
+If `tmux` AND `script` are both missing, abort: tell the user `apt install tmux` (Debian/Ubuntu/Pi) or `dnf install tmux` (Fedora). Same for missing `curl`/`openssl`/`sha256sum`.
+
+If `uname -s` is **not** Linux: skip to **Step 4z** below (macOS / other instructions).
+
+### 4b. No other claude polling the bot
+
+A live `claude` session polling the same bot token would 409-conflict with the daemon. The wizard runs **inside** the very claude process it's looking for, so the host claude is expected to count as one — anything beyond that is a second copy.
+
+`pgrep` would self-match the bash subshell (whose argv contains the search pattern). Use `ps -e -o comm=,args=` filtered by `comm` (kernel process name from `/proc/[pid]/comm`, not argv) — `bash`/`awk`/`ps` won't match `claude`:
+
+```bash
+COUNT="$(ps -e -o comm=,args= | awk '$1=="claude" && /plugin:cookiedclaw/' | wc -l)"
+if [ "$COUNT" -gt 1 ]; then
+  echo "Another cookiedclaw claude process is running. Exit it first, then re-run /cookiedclaw:setup." >&2
+  exit 1
+fi
+```
+
+### 4c. Existing units from a different workspace
+
+If `~/.config/systemd/user/cookiedclaw.service` or `~/.config/systemd/user/cookiedclaw-gateway.service` already exists, read them and check whether the workspace path baked in matches the current `pwd`. If they differ, **abort** with:
+
+> Existing cookiedclaw units already point at a different workspace. The default unit names only hold one workspace at a time. To run multiple cookiedclaw daemons, use templated units (`cookiedclaw@<workspace>.service`) — that's a follow-up, not part of this wizard yet.
+
+If they point at the current workspace, this is a re-run — proceed and overwrite.
+
+### 4d. Linger
+
+```bash
+loginctl enable-linger "$(id -un)"
+```
+
+Idempotent. Verify it took (over SSH without auth-agent forwarding, polkit can silently refuse):
+
+```bash
+loginctl show-user "$(id -un)" --property=Linger
+```
+
+If output isn't `Linger=yes`, abort: tell the user they need a local TTY or SSH auth-agent forwarding for polkit to prompt.
+
+### 4e. GATEWAY_TOKEN
+
+The gateway authenticates inbound MCP requests with a Bearer token. Adapter's `.mcp.json` reads it from `COOKIEDCLAW_GATEWAY_TOKEN`. Generate one if `keys.env` doesn't already have it (idempotent — re-runs preserve existing tokens):
+
+```bash
+WORKSPACE="$(pwd)"
+if ! grep -q "^COOKIEDCLAW_GATEWAY_TOKEN=" "$WORKSPACE/.cookiedclaw/keys.env" 2>/dev/null; then
+  TOKEN="$(openssl rand -hex 32)"
+  echo "COOKIEDCLAW_GATEWAY_TOKEN=$TOKEN" >> "$WORKSPACE/.cookiedclaw/keys.env"
+  chmod 600 "$WORKSPACE/.cookiedclaw/keys.env"
+fi
+```
+
+Don't echo the token. They generated it; treat as secret.
+
+### 4f. Download gateway binary
+
+The gateway ships as a single self-contained executable per platform via GitHub releases.
+
+```bash
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64)        PLATFORM="linux-x64"     ;;
+  Linux-aarch64)       PLATFORM="linux-arm64"   ;;
+  *)
+    echo "Unsupported Linux arch: $(uname -m). Open an issue at https://github.com/cookiedclaw/cookiedclaw/issues." >&2
+    exit 1
+    ;;
+esac
+
+mkdir -p "$HOME/.cookiedclaw/bin"
+BINARY_URL="https://github.com/cookiedclaw/cookiedclaw/releases/latest/download/cookiedclaw-gateway-${PLATFORM}"
+SHA_URL="${BINARY_URL}.sha256"
+
+curl -fsSLo "$HOME/.cookiedclaw/bin/cookiedclaw-gateway" "$BINARY_URL"
+curl -fsSLo "$HOME/.cookiedclaw/bin/cookiedclaw-gateway.sha256" "$SHA_URL"
+```
+
+Verify checksum:
+
+```bash
+cd "$HOME/.cookiedclaw/bin"
+EXPECTED="$(awk '{print $1}' cookiedclaw-gateway.sha256)"
+ACTUAL="$(sha256sum cookiedclaw-gateway | awk '{print $1}')"
+if [ "$EXPECTED" != "$ACTUAL" ]; then
+  echo "FATAL: checksum mismatch on cookiedclaw-gateway binary." >&2
+  rm -f cookiedclaw-gateway cookiedclaw-gateway.sha256
+  exit 1
+fi
+chmod 700 cookiedclaw-gateway
+cd -
+```
+
+If checksum fails, abort and bin the partial download — don't "retry without verifying", that's where supply-chain bugs slip in.
+
+### 4g. Launcher script (CC daemon side)
+
+```bash
+mkdir -p "$HOME/.cookiedclaw"
+
+cat > "$HOME/.cookiedclaw/launcher.sh" <<EOF
+#!/usr/bin/env bash
+# cookiedclaw CC-daemon launcher — generated by /cookiedclaw:setup
+set -euo pipefail
+WORKSPACE='${WORKSPACE}'
+SESSION='cookiedclaw'
+
+# Inherit COOKIEDCLAW_GATEWAY_TOKEN (and any other workspace secrets)
+# from keys.env so the adapter's .mcp.json placeholder substitution
+# resolves at claude startup.
+set -a
+. "\$WORKSPACE/.cookiedclaw/keys.env"
+set +a
+
+# systemd --user services start with a minimal PATH. Inject common
+# user-install bin dirs so claude (~/.local/bin) resolves.
+export PATH="\$HOME/.local/bin:\$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin"
+
+cd "\$WORKSPACE"
+
+tmux kill-session -t "\$SESSION" 2>/dev/null || true
+tmux new-session -d -s "\$SESSION" \\
+  'claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw-claude-code --continue'
+
+while tmux has-session -t "\$SESSION" 2>/dev/null; do
+  sleep 5
+done
+EOF
+
+chmod 700 "$HOME/.cookiedclaw/launcher.sh"
+```
+
+If tmux is unavailable, swap the `tmux …` block for `script -qfc 'claude … --continue' /dev/null` (script(1) fallback).
+
+### 4h. Two systemd units
+
+`mkdir -p ~/.config/systemd/user/`, then write **gateway** unit:
+
+```bash
+cat > "$HOME/.config/systemd/user/cookiedclaw-gateway.service" <<EOF
+[Unit]
+Description=cookiedclaw gateway — MCP-over-HTTP + Telegram polling
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=${WORKSPACE}/.cookiedclaw/keys.env
+Environment=GATEWAY_PORT=47390
+Environment=WORKSPACE=${WORKSPACE}
+WorkingDirectory=${WORKSPACE}
+ExecStart=%h/.cookiedclaw/bin/cookiedclaw-gateway
+Restart=always
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target
+EOF
+```
+
+…and **CC daemon** unit (depends on the gateway being up):
+
+```bash
+cat > "$HOME/.config/systemd/user/cookiedclaw.service" <<EOF
+[Unit]
+Description=cookiedclaw — Claude Code session connected to the gateway
+After=cookiedclaw-gateway.service network-online.target
+Wants=cookiedclaw-gateway.service network-online.target
+Requires=cookiedclaw-gateway.service
+
+[Service]
+Type=simple
+Environment=WORKSPACE=${WORKSPACE}
+ExecStart=%h/.cookiedclaw/launcher.sh
+Restart=always
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target
+EOF
+```
+
+The `Requires=` + `After=` make systemd start the gateway first and stop the CC daemon if the gateway dies — adapter is useless without gateway anyway.
+
+### 4i. Reload + enable
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable cookiedclaw-gateway cookiedclaw
+```
+
+Do **not** `start` here — would 409-collide with the user's currently-running ad-hoc `claude` (Step 4b's pgrep check rejected concurrent claudes already, but the user might launch one between steps; safer to keep `start` an explicit user act).
+
+### 4z. macOS / non-Linux fallback
+
+If Step 4a detected a non-Linux platform, skip 4b–4i. Tell the user:
+
+> systemd daemon mode is Linux-only. On macOS / BSD you can still run cookiedclaw, just without auto-restart-on-crash. The gateway and CC each get their own tmux pane:
 >
 > ```
-> /cookiedclaw:enable-daemon
+> # one-time: get the gateway binary
+> # (no macOS arm64/x64 builds yet — track https://github.com/cookiedclaw/cookiedclaw/issues
+> # for when launchd support lands)
 > ```
 >
-> That wizard downloads the gateway binary from GitHub releases, generates the Bearer token the adapter needs, writes systemd units, and tells the user how to start the whole setup. Tell them this clearly — running `/setup` then trying to DM the bot without `/enable-daemon` will leave them with no responses and no clear error.
+> For now, run cookiedclaw in dev mode under tmux:
+>
+> ```
+> tmux new -s cookiedclaw \
+>   'cd ~/cookiedclaw && claude --enable-auto-mode \
+>      --dangerously-load-development-channels \
+>      plugin:cookiedclaw@cookiedclaw-claude-code'
+> ```
 
-- Once `/cookiedclaw:enable-daemon` is done and the user has run `systemctl --user start cookiedclaw-gateway cookiedclaw`, restarting CC from this directory picks up the token: `cd <workspace-path> && claude --enable-auto-mode --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw-claude-code`. CC needs to be in this dir for `CLAUDE.md` auto-injection to work. **Strongly recommend `--enable-auto-mode`** — without it CC pauses to ask "are you sure?" before each non-trivial tool, which is fine in a terminal but painful when the user is driving from Telegram. Risky tools still go through the inline-button permission relay, so safety isn't lost.
-- Briefly explain the workspace-file lifecycle:
-  - `./CLAUDE.md` → system prompt, auto-loaded by CC every session, edit if you want to tweak agent behavior
-  - `./BOOTSTRAP.md` → discovery script, self-deletes after first run
-  - `./IDENTITY.md`, `./USER.md`, `./SOUL.md` → continuity-of-self files, edit any time
-  - `./.cookiedclaw/keys.env` → secrets (chmod 600). Editing rotates keys.
-- Mention multi-bot: if they ever want a second cookiedclaw (work bot, family bot, …) just rerun this skill from a different empty directory.
-- Point them at the optional integrations as separate skills they can run any time:
-  - `/cookiedclaw:fal-setup` — image / video generation via fal.ai
-  - `/cookiedclaw:supermemory-setup` — cross-session semantic memory (requires Supermemory Pro)
-  Both are independent — they won't re-trigger this whole flow.
-- If they configured nothing (just looked around): say so cheerfully. `/cookiedclaw:setup` is always there.
+Then jump straight to Step 5 wrap-up.
 
-If you can detect this is a remote / headless setup (e.g. `$SSH_CONNECTION` is set, no `$DISPLAY`), also tell them how to keep cookiedclaw alive after they disconnect:
+## Step 5 — Wrap up
+
+Summarize what got configured (workspace path, files written, units enabled). Then send the switch-over instructions:
 
 ````
-For 24/7 runs, wrap CC in tmux so it survives SSH disconnects. From this workspace:
+✓ Setup complete.
 
-  tmux new -s cookied
-  claude --enable-auto-mode --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw-claude-code
-  # Ctrl+b d to detach — session keeps running
+To start cookiedclaw:
 
-Reattach later with `tmux attach -t cookied`. A server reboot kills the
-session, so add a systemd --user unit if you want auto-start.
+  1. In the terminal running `claude` right now, press
+     Ctrl+C twice to exit (it can't run alongside the daemon — Telegram
+     only allows one bot poller at a time).
+
+  2. From any terminal:
+
+       systemctl --user start cookiedclaw-gateway cookiedclaw
+
+     The gateway starts first; CC follows once it's up.
+
+  3. DM your bot. Cookie should respond from inside the daemon.
+
+After this:
+  • Future restarts: /cookiedclaw:daemon-restart from Telegram
+  • Daemon health: /cookiedclaw:daemon-status
+  • Live-watch CC TUI: tmux attach -t cookiedclaw
+  • Live logs:
+      journalctl --user -fu cookiedclaw-gateway
+      journalctl --user -fu cookiedclaw
+
+Roll back:
+  systemctl --user disable --now cookiedclaw cookiedclaw-gateway
+  rm -rf ~/.cookiedclaw/bin
 ````
 
-Don't paste this on a local Mac/desktop session — it's noise there.
+Brief workspace-file lifecycle reminder:
+
+- `./CLAUDE.md` → system prompt, edit to tweak agent behavior
+- `./BOOTSTRAP.md` → discovery script, self-deletes after first run
+- `./IDENTITY.md`, `./USER.md`, `./SOUL.md` → continuity-of-self files, edit any time
+- `./.cookiedclaw/keys.env` → secrets (chmod 600). Editing rotates keys.
+
+Mention multi-bot: rerun this skill from a different empty directory for a second cookiedclaw (work bot, family bot, …).
+
+Optional integrations (independent skills, won't re-trigger this whole flow):
+
+- `/cookiedclaw:fal-setup` — image / video generation via fal.ai
+- `/cookiedclaw:supermemory-setup` — cross-session semantic memory (requires Supermemory Pro)
 
 ## Don'ts
 
 - Don't run `claude mcp add` or `claude plugin install` without confirming the exact command with the user first.
-- Don't write to `~/.cookiedclaw/` — that's the OLD location. Per-workspace philosophy means everything goes under `$PWD`.
+- Don't write to `~/.cookiedclaw/` (that's runtime state — `keys.env`, `bin/`, `cache/`); workspace identity files (CLAUDE/IDENTITY/USER/SOUL) go under `$PWD`.
 - Don't commit `./.cookiedclaw/keys.env` to git. (If `.gitignore` doesn't already cover it, add a line.)
-- Don't echo API keys / tokens back in confirmation messages — say *"saved"*, not *"saved TELEGRAM_BOT_TOKEN=123456:ABC…"*.
+- Don't echo API keys / tokens back in confirmation messages.
 - Don't push optional integrations. If the user says "skip" or "later", accept and move on.
-- Don't try to set up integrations not on the list. If asked for Notion / GitHub / etc., point them at `claude mcp add` directly or `claude plugin marketplace`.
+- Don't try to "repair" a checksum mismatch by re-downloading or skipping verification — abort instead.
+- Don't `systemctl start` here. The user is still inside an ad-hoc `claude`; starting the daemon would 409 against Telegram. The wizard ends with `enable`, not `start`.
