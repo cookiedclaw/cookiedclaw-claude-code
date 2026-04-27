@@ -22,7 +22,7 @@ If this prints anything other than `active`, the daemon isn't running and there'
 
 Send a Telegram message warning the user, because the next thing that happens is your own death:
 
-> 🔄 Restarting cookiedclaw — I'll be back in a few seconds. Conversation context will reset, but identity files (IDENTITY/USER/SOUL) are reread on boot.
+> 🔄 Restarting cookiedclaw — I'll be back in a few seconds. Conversation continues via `--continue`; identity files (IDENTITY/USER/SOUL) reread on boot.
 
 Then issue the restart in a detached subshell so this skill returns before systemd kills the channel server (otherwise the warning message above might not flush to Telegram in time):
 
@@ -34,13 +34,13 @@ The 2-second sleep is the safety window: this skill returns immediately, the cha
 
 ## After restart
 
-The fresh CC session will:
+The fresh CC process will:
 1. Reload all skills, plugins, and MCP servers (this is the whole point)
 2. Restart the channel server, which republishes the bot menu
 3. Reload `IDENTITY.md` / `USER.md` / `SOUL.md` from the workspace
-4. Drop the conversation history — fresh start
+4. Resume the previous conversation via `claude --continue` (baked into the launcher) — recent context survives the restart
 
-The user will not see a "back online" message automatically. If continuity matters, the user pings the bot first; the new session picks up the DM as a fresh `<channel source="telegram">` event.
+The user will not see a "back online" message automatically. If continuity matters, the user pings the bot; the new session picks up the DM and continues the prior thread.
 
 ## Notes
 
