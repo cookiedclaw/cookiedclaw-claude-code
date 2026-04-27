@@ -42,6 +42,16 @@ export const portFile = resolve(cacheDir, "progress.port");
 export const stopFlag = resolve(cacheDir, "stop.flag");
 
 /**
+ * Pending-chat / active-chat snapshot. Written every time `pendingChats`
+ * or `activeChatId` mutates, read on startup. Lets the channel survive
+ * its own restart (daemon kick, MCP stdio respawn, plain crash + CC
+ * `--resume`) without dropping the in-flight chat — without this, every
+ * tool event after a restart logs `pending=[none]` and the user sees no
+ * typing/progress until they send a fresh inbound. See `chat-state.ts`.
+ */
+export const pendingFile = resolve(cacheDir, "pending.json");
+
+/**
  * Append-only diagnostic log shared between the channel server and the
  * Pre/PostToolUse hook script. Lets us debug "why didn't the typing
  * indicator update" without flipping CC's debug-log toggle.

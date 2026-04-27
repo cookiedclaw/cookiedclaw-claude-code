@@ -6,8 +6,16 @@
  * to every chat in `pendingChats`. Each chat keeps its own copy of
  * the events list — when one gets a reply and its events reset, the
  * others aren't disturbed.
+ *
+ * `pendingChats` and `activeChatId` are also persisted to disk
+ * (`pendingFile`) so the channel survives its own restart without
+ * losing the in-flight chat. Without persistence, a daemon kick / MCP
+ * respawn / crash + CC `--resume` produces tool events with no chat
+ * to fan them out to.
  */
+import { readFile, writeFile } from "node:fs/promises";
 import { bot } from "./bot.ts";
+import { dlog, pendingFile } from "./paths.ts";
 
 export type ToolEvent = {
   toolUseId: string;
@@ -48,6 +56,104 @@ export const pendingChats = new Set<string>();
 export let activeChatId: string | undefined;
 export function setActiveChatId(chatId: string): void {
   activeChatId = chatId;
+  schedulePersist();
+}
+
+/**
+ * Add a chat to `pendingChats` and persist. Use this instead of
+ * `pendingChats.add` directly so a server restart doesn't lose the
+ * in-flight set — see file header.
+ */
+export function addPending(chatId: string): void {
+  pendingChats.add(chatId);
+  schedulePersist();
+}
+
+/**
+ * Remove a chat from `pendingChats` and persist. Currently unused (the
+ * Stop hook deliberately keeps chats pending so post-stop tool events
+ * still fan out — see progress.ts). Exposed for symmetry and future
+ * use.
+ */
+export function removePending(chatId: string): void {
+  if (pendingChats.delete(chatId)) schedulePersist();
+}
+
+// -----------------------------------------------------------------------------
+// Disk persistence (pendingChats + activeChatId)
+// -----------------------------------------------------------------------------
+
+let persistTimer: ReturnType<typeof setTimeout> | undefined;
+const PERSIST_DEBOUNCE_MS = 50;
+
+/**
+ * Coalesce rapid mutations into one write — a burst of `addPending`
+ * calls on a multi-attachment inbound shouldn't trigger 5 fsyncs.
+ */
+function schedulePersist(): void {
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = undefined;
+    void persistNow();
+  }, PERSIST_DEBOUNCE_MS);
+}
+
+async function persistNow(): Promise<void> {
+  try {
+    await writeFile(
+      pendingFile,
+      JSON.stringify({
+        pending: [...pendingChats],
+        active: activeChatId ?? null,
+      }),
+    );
+  } catch (err) {
+    // Disk full / read-only mount / etc. Don't crash the channel — the
+    // worst-case fallback is "lose pending state on next restart",
+    // which is what we already have today.
+    dlog(
+      `pending persist failed: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+}
+
+/**
+ * Read `pendingFile` back into `pendingChats` + `activeChatId`. Call
+ * once at startup, before MCP/bot init, so the very first tool event
+ * after a restart sees the right state. Idempotent and tolerant of a
+ * missing/corrupt file (treats it as an empty starting point).
+ */
+export async function loadPending(): Promise<void> {
+  try {
+    const raw = await readFile(pendingFile, "utf8");
+    const data = JSON.parse(raw) as {
+      pending?: unknown;
+      active?: unknown;
+    };
+    if (Array.isArray(data.pending)) {
+      for (const id of data.pending) {
+        if (typeof id === "string") pendingChats.add(id);
+      }
+    }
+    if (typeof data.active === "string") {
+      activeChatId = data.active;
+    }
+    dlog(
+      `pending state loaded: pending=[${[...pendingChats].join(",") || "none"}] active=${activeChatId ?? "none"}`,
+    );
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      "code" in err &&
+      (err as NodeJS.ErrnoException).code === "ENOENT"
+    ) {
+      // First run for this workspace, nothing to load.
+      return;
+    }
+    dlog(
+      `pending state load failed (treating as empty): ${err instanceof Error ? err.message : err}`,
+    );
+  }
 }
 
 // -----------------------------------------------------------------------------

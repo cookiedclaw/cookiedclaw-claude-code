@@ -2,7 +2,7 @@
 name: enable-daemon
 description: One-time onboarding wizard that turns the current ad-hoc Claude Code launch into a systemd-managed daemon. After this, cookiedclaw survives logout, reboots, and crashes — and the agent can restart itself remotely from Telegram via /cookiedclaw:daemon-restart. Run this once per workspace, from inside the workspace directory.
 disable-model-invocation: true
-allowed-tools: Bash(uname *) Bash(which *) Bash(command -v *) Bash(loginctl enable-linger *) Bash(loginctl show-user *) Bash(systemctl --user daemon-reload) Bash(systemctl --user enable cookiedclaw) Bash(systemctl --user is-active cookiedclaw) Bash(systemctl --user is-enabled cookiedclaw) Bash(mkdir -p *) Bash(test *) Bash(pwd) Bash(id -un) Bash(getent passwd *) Bash(pgrep -af *) Bash(wc -l) Bash(chmod 700 *) Read Write Edit
+allowed-tools: Bash(uname *) Bash(which *) Bash(command -v *) Bash(loginctl enable-linger *) Bash(loginctl show-user *) Bash(systemctl --user daemon-reload) Bash(systemctl --user enable cookiedclaw) Bash(systemctl --user is-active cookiedclaw) Bash(systemctl --user is-enabled cookiedclaw) Bash(mkdir -p *) Bash(test *) Bash(pwd) Bash(id -un) Bash(getent passwd *) Bash(ps -e -o *) Bash(awk *) Bash(wc -l) Bash(chmod 700 *) Read Write Edit
 ---
 
 # Going daemon
@@ -61,17 +61,19 @@ If on macOS or another non-Linux: stop here, tell the user this wizard is Linux-
 
 ### Already-running ad-hoc claude
 
-A live `claude` session polling the same bot token would 409-conflict with the daemon. The wizard runs **inside** the very claude process it's looking for, so naive `pgrep` will always match self. Use a count-based check instead — if the count is greater than 1, a second copy is running and we abort:
+A live `claude` session polling the same bot token would 409-conflict with the daemon. The wizard runs **inside** the very claude process it's looking for, so the host claude is expected to count as one — anything beyond that is a second copy and we abort.
+
+`pgrep -af 'claude .*plugin:cookiedclaw'` would seem natural here, but it has a sneaky bug: `pgrep -af` matches against full argv across the whole process tree, and the bash subshell that the agent spawns to run this very check has the pattern as a literal in its own argv (it's the `bash -c` command line). The pgrep-runner self-matches and inflates the count by one or more. We use `ps` + `awk` instead — filtering by `comm` (the kernel process name from `/proc/[pid]/comm`, *not* argv) bypasses the self-match entirely, since the runner is `bash`/`awk`/`ps`, never `claude`:
 
 ```bash
-COUNT="$(pgrep -af 'claude .*--dangerously-load-development-channels.*plugin:cookiedclaw' | wc -l)"
+COUNT="$(ps -e -o comm=,args= | awk '$1=="claude" && /plugin:cookiedclaw/' | wc -l)"
 if [ "$COUNT" -gt 1 ]; then
   echo "Another cookiedclaw claude process is running. Exit it first, then re-run /cookiedclaw:enable-daemon." >&2
   exit 1
 fi
 ```
 
-The pattern is narrow on purpose: matches only the actual launch command, not someone editing this wizard in `vim` or grepping history for "cookiedclaw". Unambiguous: 1 = just us, the wizard is fine to proceed; >1 = at least one other process exists, abort.
+`ps -e -o comm=,args=` prints `<comm> <full-args>` (the trailing `=` strips column headers). `$1=="claude"` keeps only rows whose kernel-side process name is exactly `claude`, then `/plugin:cookiedclaw/` narrows to rows whose argv contains the plugin token. Unambiguous: 1 = just the host claude running this wizard, fine to proceed; >1 = another copy exists, abort.
 
 ### Existing unit from a different workspace
 

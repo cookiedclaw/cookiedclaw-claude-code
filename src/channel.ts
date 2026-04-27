@@ -39,6 +39,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadAccess } from "./access.ts";
 import { bot } from "./bot.ts";
+import { loadPending } from "./chat-state.ts";
 import { allowAll, allowedUsers, hasToken } from "./env.ts";
 import { mcp } from "./mcp.ts";
 import { startProgressServer } from "./progress-server.ts";
@@ -50,6 +51,12 @@ import "./inbound.ts";
 import "./permission-relay.ts";
 
 await loadAccess();
+// Restore pendingChats + activeChatId from disk BEFORE the MCP server
+// connects — otherwise CC's resumed session can fire its first
+// PreToolUse hook into an empty pending set, and the user sees the
+// agent working with no typing/progress until they send a fresh
+// inbound. See chat-state.ts for the full rationale.
+await loadPending();
 await startProgressServer();
 
 await mcp.connect(new StdioServerTransport());
