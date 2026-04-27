@@ -15,8 +15,8 @@ import {
 import { downloadTelegramFile } from "./attachments.ts";
 import { bot } from "./bot.ts";
 import {
+  addPending,
   chats,
-  pendingChats,
   setActiveChatId,
   startTyping,
   stopTyping,
@@ -47,7 +47,7 @@ async function forwardToCC(
   extraMeta?: Record<string, string>,
 ): Promise<void> {
   setActiveChatId(chatId);
-  pendingChats.add(chatId);
+  addPending(chatId);
   // Reset this chat's tool log — it's the start of their turn. Other
   // pending chats keep whatever they had. Mutate the existing state
   // object instead of replacing it: replacing would orphan a typing
@@ -189,7 +189,7 @@ async function handleStopCommand(
   // /stop ends this chat's turn from the user side — agent will ack
   // shortly and we'll remove from pending then. Until then they're
   // still pending so any final-tool progress goes to them.
-  pendingChats.add(chatId);
+  addPending(chatId);
   dlog(`/stop: chat=${chatId} sender=${senderId} msg=${messageId}`);
   try {
     await mcp.server.notification({
