@@ -180,6 +180,24 @@ tmux attach -t cookied
 > [!NOTE]
 > A server reboot kills the tmux session — you'll need to `tmux new` and start CC again. If you want auto-start-on-boot and auto-restart-on-crash, wrap this in a systemd `--user` unit.
 
+## Going daemon (Linux)
+
+Once you're tired of `tmux attach` and want cookiedclaw to survive reboots, crashes, and even let the agent restart itself from chat, run the wizard from inside your workspace:
+
+```
+/cookiedclaw:enable-daemon
+```
+
+It writes a `systemd --user` unit + a tmux launcher, enables linger so the service runs without a logged-in shell, and tells you exactly how to switch over from your current ad-hoc launch (don't auto-start — that would collide with the live session polling the same bot token).
+
+After the switch:
+
+- **`/cookiedclaw:restart`** — Cookie restarts the whole CC session via systemd, no terminal access needed. Useful after installing a new MCP / plugin / skill that's only discovered at startup.
+- **`/cookiedclaw:install-skill <package>`** — installs a skill via [skills.sh](https://skills.sh) and restarts cookiedclaw automatically so it's immediately available.
+- Live debug: `tmux attach -t cookiedclaw`. Logs: `journalctl --user -fu cookiedclaw`. Roll back: `systemctl --user disable --now cookiedclaw`.
+
+This stays a Claude Code plugin — the agent still runs *inside* a real CC session. The systemd wrapper is just keep-alive + remote-restart plumbing around it.
+
 ## Roadmap
 
 - **Marketplace publish** so the dev flag goes away and install becomes one line of `/plugin install`.
