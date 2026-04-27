@@ -243,7 +243,14 @@ If `~/.config/systemd/user/cookiedclaw.service` or `~/.config/systemd/user/cooki
 
 > Existing cookiedclaw units already point at a different workspace. The default unit names only hold one workspace at a time. To run multiple cookiedclaw daemons, use templated units (`cookiedclaw@<workspace>.service`) — that's a follow-up, not part of this wizard yet.
 
-If they point at the current workspace, this is a re-run — proceed and overwrite.
+If they point at the current workspace, this is a re-run. **Stop them before overwriting** — otherwise a running v0.4.x-style daemon keeps polling Telegram while we rewrite its launcher underneath, which causes a mid-flight Telegram 409 and confuses the user about which version is live:
+
+```bash
+systemctl --user stop cookiedclaw cookiedclaw-gateway 2>/dev/null || true
+systemctl --user reset-failed cookiedclaw cookiedclaw-gateway 2>/dev/null || true
+```
+
+After stop, proceed with the rest of Step 4 — the new launcher / unit files / binary will overwrite cleanly, and the user gets to start the new daemon explicitly at the end (Step 5).
 
 ### 4d. Linger
 
@@ -445,27 +452,26 @@ Summarize what got configured (workspace path, files written, units enabled). Th
 ````
 ✓ Setup complete.
 
-To start cookiedclaw:
+NEXT STEP — exit this terminal first.
 
-  1. In the terminal running `claude` right now, press
-     Ctrl+C twice to exit (it can't run alongside the daemon — Telegram
-     only allows one bot poller at a time).
+  Press Ctrl+C twice in this Claude Code TUI. From now on cookiedclaw
+  runs as a daemon — you don't need ad-hoc claude anymore. Keeping
+  this TUI open while the daemon runs causes two CC sessions polling
+  the same gateway, and the ad-hoc one doesn't have GATEWAY_TOKEN in
+  its shell env so its MCP connection silently 401s. Just exit it.
 
-  2. From any terminal:
+Then start the daemon (any terminal):
 
        systemctl --user start cookiedclaw-gateway cookiedclaw
 
-     The gateway starts first; CC follows once it's up.
+The gateway starts first; CC follows once it's up. DM your bot —
+Cookie should answer from inside the daemon within a few seconds.
 
-  3. DM your bot. Cookie should respond from inside the daemon.
-
-After this:
-  • Future restarts: /cookiedclaw:daemon-restart from Telegram
-  • Daemon health: /cookiedclaw:daemon-status
-  • Live-watch CC TUI: tmux attach -t cookiedclaw
-  • Live logs:
-      journalctl --user -fu cookiedclaw-gateway
-      journalctl --user -fu cookiedclaw
+Future operations:
+  • Restart from Telegram:   /cookiedclaw:daemon-restart
+  • Health check:            /cookiedclaw:daemon-status
+  • Live-watch CC TUI:       tmux attach -t cookiedclaw
+  • Live logs:               journalctl --user -fu cookiedclaw{,-gateway}
 
 Roll back:
   systemctl --user disable --now cookiedclaw cookiedclaw-gateway
