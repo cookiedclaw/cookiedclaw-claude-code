@@ -1,8 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
-  "name": "cookiedclaw",
+  "name": "cookiedclaw-claude-code",
   "version": "0.4.0",
-  "description": "Telegram bridge for Claude Code — DM your CC session, get live tool progress, permission relay, and image dispatch back in chat.",
+  "description": "Claude Code adapter for cookiedclaw — wires CC into the cookiedclaw gateway so you can DM your session over Telegram with live tool progress, permission relay, and image dispatch.",
   "owner": {
     "name": "Timur Turatbekov"
   },
