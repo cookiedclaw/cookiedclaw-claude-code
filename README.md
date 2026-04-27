@@ -109,7 +109,7 @@ claude plugin uninstall cookiedclaw@cookiedclaw-claude-code
 ## Related
 
 - **[cookiedclaw/cookiedclaw](https://github.com/cookiedclaw/cookiedclaw)** — the universal gateway (binary you just installed)
-- **[landing](https://landing-blush-xi-11.vercel.app)** — pitch page
+- **[landing](https://cookiedclaw.com)** — pitch page
 - **[org profile](https://github.com/cookiedclaw)** — family of `cookiedclaw-*` adapters
 
 > [!NOTE]
