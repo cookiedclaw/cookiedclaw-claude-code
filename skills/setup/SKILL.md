@@ -332,16 +332,31 @@ set -euo pipefail
 WORKSPACE='${WORKSPACE}'
 SESSION='cookiedclaw'
 
-# Inherit COOKIEDCLAW_GATEWAY_TOKEN (and any other workspace secrets)
-# from keys.env so the adapter's .mcp.json placeholder substitution
-# resolves at claude startup.
+# 1. Fallback PATH so the basics resolve even if the user's shell rc is
+#    empty or busted. systemd --user inherits a minimal PATH that
+#    typically excludes ~/.local/bin and ~/.bun/bin.
+export PATH="\$HOME/.local/bin:\$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin"
+
+# 2. Source the user's interactive shell rc — picks up nvm, conda,
+#    pyenv, custom PATH extensions, anything else they've set up.
+#    Best-effort: any error / unset-var / failed conditional in rc
+#    must not kill the launcher (rc files are written for interactive
+#    shells, not strict-mode scripts).
+USER_SHELL="\$(getent passwd "\$USER" | cut -d: -f7 || echo /bin/sh)"
+set +eu
+case "\$USER_SHELL" in
+  */bash) [ -f "\$HOME/.bashrc" ] && . "\$HOME/.bashrc" ;;
+  */zsh)  [ -f "\$HOME/.zshrc"  ] && . "\$HOME/.zshrc"  ;;
+  */fish) true ;;  # fish rc isn't sourceable from bash; users on fish should set PATH via launcher edit
+esac
+set -eu
+
+# 3. Workspace secrets last — these win over anything rc might have set
+#    (notably COOKIEDCLAW_GATEWAY_TOKEN, which the adapter's .mcp.json
+#    substitutes at claude startup so MCP-over-HTTP authenticates).
 set -a
 . "\$WORKSPACE/.cookiedclaw/keys.env"
 set +a
-
-# systemd --user services start with a minimal PATH. Inject common
-# user-install bin dirs so claude (~/.local/bin) resolves.
-export PATH="\$HOME/.local/bin:\$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin"
 
 cd "\$WORKSPACE"
 
