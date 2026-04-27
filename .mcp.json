@@ -1,8 +1,11 @@
 {
   "mcpServers": {
     "cookiedclaw": {
-      "command": "bun",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/src/channel.ts"]
+      "type": "http",
+      "url": "${COOKIEDCLAW_GATEWAY_URL:-http://127.0.0.1:47390}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${COOKIEDCLAW_GATEWAY_TOKEN}"
+      }
     }
   }
 }

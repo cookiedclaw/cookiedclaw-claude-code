@@ -16,17 +16,20 @@
 
 ---
 
+> [!WARNING]
+> **Architecture in flux.** This adapter just split apart from its all-in-one form. The TypeScript runtime moved out into [`cookiedclaw/cookiedclaw`](https://github.com/cookiedclaw/cookiedclaw) (the universal gateway), and this repo is becoming a config-only Claude Code adapter that connects to that gateway via HTTP MCP. **The migration isn't user-ready yet** — gateway distribution (compiled binary, systemd unit, install wizard) is still being put together. Until that lands, run the previous all-in-one version (any tag ≤ `v0.4.0`) instead of `main`.
+
 ## Overview
 
-**cookiedclaw** is a Claude Code plugin that turns any Telegram chat into a frontend for your CC session. It bridges Telegram and CC over a custom MCP channel so inbound DMs become `<channel source="telegram">` events the agent can act on, and CC's tool calls, permission prompts, and file output flow back to the chat in real time.
+**cookiedclaw** turns any Telegram chat into a frontend for your Claude Code session. Inbound DMs become `<channel source="cookiedclaw">` events the agent can act on; CC's tool calls, permission prompts, and file output flow back to the chat in real time.
 
-It's small enough to read in an afternoon (~2k LOC of TypeScript across 14 focused modules) and pragmatic about the trade-offs: the agent runs on your hardware and keeps a persistent identity across sessions in `~/.cookiedclaw/`.
+The Claude Code-specific piece is small (config + hooks + skills); the heavy lifting — Telegram polling, paired-user state, persistence, MCP server — lives in the [universal gateway](https://github.com/cookiedclaw/cookiedclaw). This adapter is what wires CC into that gateway.
 
 > [!IMPORTANT]
 > **Your Max subscription is billed as a subscription.** Because cookiedclaw runs inside Claude Code (not via the Anthropic SDK), Max-included usage applies normally — no surprise extra-API charges that SDK-based Telegram bridges incur. If you already pay for Claude Max, cookiedclaw is effectively free to run.
 
 > [!NOTE]
-> cookiedclaw is in active development. The marketplace install path isn't open yet — for now you load it as a development channel (one extra CLI flag).
+> Marketplace install path isn't open yet — for now you load this as a development channel (one extra CLI flag). Will go away once the plugin is approved.
 
 ## Features
 
@@ -104,30 +107,31 @@ claude --enable-auto-mode \
 ## How it works
 
 ```
-Telegram ─DM─►  src/channel.ts  ─MCP notifications/claude/channel─►  Claude Code
-                (bun process, MCP server)                                          │
-                       ▲                                                           │
-                       │ ◄── reply / react / pair / revoke_access / list_access ◄──┘
+Telegram ─DM─►  cookiedclaw gateway  ──MCP-over-HTTP──►  Claude Code
+                (separate bun process,                   (this adapter:
+                 see /cookiedclaw/cookiedclaw)             .mcp.json points
+                       ▲                                   at gateway URL,
+                       │                                   hooks fire on
+                       │ ◄── reply / react / pair / …  ◄── tool use)
+                       │     (gateway tools, called by
+                       │      CC via the HTTP MCP server)
                        │
                   Pre/PostToolUse hooks (hooks/tool-progress.ts)
-                       │  POST localhost:port
+                       │  POST localhost progress endpoint (gateway-hosted)
                        ▼
                   edit live progress message in chat
 ```
 
-Each box is a single-purpose module:
+This adapter is config-only. The TypeScript runtime, Telegram polling, paired-user state, and the MCP server itself all live in the [gateway](https://github.com/cookiedclaw/cookiedclaw). What stays here:
 
-| Module | Concern |
-|--------|---------|
-| `src/channel.ts` | Wiring entrypoint — imports the rest |
-| `src/{paths,env,bot}.ts` | Filesystem layout, env loading, grammy bot singleton |
-| `src/{format,chat-state,access}.ts` | MarkdownV2, per-chat state, pair codes / allowlist |
-| `src/{attachments,progress}.ts` | Embed markers, file download, tool-progress rendering |
-| `src/{mcp,tools}.ts` | MCP server + the five tools (`reply`, `react`, `pair`, `revoke_access`, `list_access`) |
-| `src/{inbound,permission-relay}.ts` | grammy handlers for text / photo / document, permission-prompt buttons |
-| `src/{progress-server,skill-discovery}.ts` | Localhost endpoint for hooks, slash-menu population |
-| `hooks/tool-progress.ts` | Pre/PostToolUse hook script |
-| `skills/setup/SKILL.md` | The `/cookiedclaw:setup` wizard |
+| Path | Concern |
+|------|---------|
+| `.mcp.json` | Points CC at the gateway's HTTP MCP endpoint (Bearer-authed). |
+| `hooks/tool-progress.ts` | Pre/PostToolUse/Stop hook — POSTs tool events to the gateway's progress endpoint so the live progress message updates. Stand-alone bun script, no npm deps. |
+| `skills/setup/SKILL.md` | `/cookiedclaw:setup` — first-run wizard (writes identity files + keys.env). |
+| `skills/{enable,daemon-status,daemon-restart,install-skill}/SKILL.md` | Daemon-mode lifecycle skills. |
+| `skills/{fal,supermemory}-setup/SKILL.md` | Optional integration installers. |
+| `CLAUDE.md` / identity files | Agent system prompt + persona, auto-loaded by CC. |
 
 ## Workspace layout
 
