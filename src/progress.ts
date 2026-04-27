@@ -298,9 +298,14 @@ export function schedulePush(chatId: string): void {
 
 /**
  * Top-level hook ingest. Three phases:
- *  - `stop`: agent ended its turn — drop typing, delete progress
- *    message, clear pendingChats. This is the authoritative
- *    "agent is done" signal.
+ *  - `stop`: CC's main agent finished a response. Stop typing, but
+ *    deliberately keep `pendingChats` and the progress message intact —
+ *    CC fires Stop after the visible reply, yet the agent often
+ *    continues with background work (sub-agents, post-reply edits,
+ *    file cleanup). If we cleared state here those subsequent tool
+ *    events would fan out to nobody. Real state reset happens on the
+ *    next user inbound (forwardToCC), and the progress message survives
+ *    as a chat-history record of what the bot did.
  *  - `pre` / `post`: tool progress event. Skips our own `reply`/`react`
  *    tools (they're the final output, not progress) and broadcasts to
  *    every chat in `pendingChats`.
@@ -308,18 +313,10 @@ export function schedulePush(chatId: string): void {
 export async function handleProgress(p: ProgressPayload): Promise<void> {
   if (p.phase === "stop") {
     dlog(
-      `stop hook fired — clearing pending=[${[...pendingChats].join(",") || "none"}]`,
+      `stop hook fired — typing off, keeping pending=[${[...pendingChats].join(",") || "none"}]`,
     );
-    const toClear = [...pendingChats];
-    pendingChats.clear();
-    for (const chatId of toClear) {
+    for (const chatId of pendingChats) {
       stopTyping(chatId);
-      void deleteProgressMessage(chatId);
-      const state = chats.get(chatId);
-      if (state) {
-        state.events = [];
-        state.progressMessageId = undefined;
-      }
     }
     return;
   }
