@@ -1,7 +1,7 @@
 ---
-name: restart
+name: daemon-restart
 description: Restart the cookiedclaw Claude Code session via its systemd user unit. Use after installing a new skill / plugin / MCP server (anything that's only discovered at startup), or when the agent itself asks to be reborn. Requires `/cookiedclaw:enable-daemon` to have been run first.
-allowed-tools: Bash(systemctl --user restart cookiedclaw) Bash(systemctl --user status cookiedclaw*) Bash(systemctl --user is-active cookiedclaw)
+allowed-tools: Bash(systemctl --user restart cookiedclaw) Bash(systemctl --user is-active cookiedclaw) Bash(systemctl --user status cookiedclaw --no-pager)
 ---
 
 # Restart cookiedclaw
@@ -37,7 +37,7 @@ This call may or may not return before systemd sends SIGTERM to your own process
 The fresh CC session will:
 1. Reload all skills, plugins, and MCP servers (this is the whole point)
 2. Restart the channel server, which republishes the bot menu
-3. Reload `IDENTITY.md` / `USER.md` / `SOUL.md` / `HEARTBEAT.md` from the workspace
+3. Reload `IDENTITY.md` / `USER.md` / `SOUL.md` from the workspace
 4. Drop the conversation history — fresh start
 
 The user will not see a "back online" message automatically. If continuity matters, the user pings the bot first; the new session picks up the DM as a fresh `<channel source="telegram">` event.

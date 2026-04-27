@@ -1,8 +1,8 @@
 ---
 name: enable-daemon
-description: One-time onboarding wizard that turns the current ad-hoc Claude Code launch into a systemd-managed daemon. After this, cookiedclaw survives logout, reboots, and crashes — and the agent can restart itself remotely from Telegram via /cookiedclaw:restart. Run this once per workspace, from inside the workspace directory.
+description: One-time onboarding wizard that turns the current ad-hoc Claude Code launch into a systemd-managed daemon. After this, cookiedclaw survives logout, reboots, and crashes — and the agent can restart itself remotely from Telegram via /cookiedclaw:daemon-restart. Run this once per workspace, from inside the workspace directory.
 disable-model-invocation: true
-allowed-tools: Bash(uname *) Bash(which *) Bash(command -v *) Bash(loginctl *) Bash(systemctl --user *) Bash(mkdir -p *) Bash(test *) Bash(pwd) Bash(id -u *) Bash(getent *) Read Write Edit
+allowed-tools: Bash(uname *) Bash(which *) Bash(command -v *) Bash(loginctl enable-linger *) Bash(loginctl show-user *) Bash(systemctl --user daemon-reload) Bash(systemctl --user enable cookiedclaw) Bash(systemctl --user is-active cookiedclaw) Bash(systemctl --user is-enabled cookiedclaw) Bash(mkdir -p *) Bash(test *) Bash(pwd) Bash(id -un) Bash(getent passwd *) Bash(pgrep -af *) Bash(chmod 700 *) Bash(chmod 755 *) Read Write Edit
 ---
 
 # Going daemon
@@ -12,8 +12,8 @@ You are walking the user through converting their **current workspace** from a h
 The end state:
 - `~/.config/systemd/user/cookiedclaw.service` exists and is enabled
 - `loginctl enable-linger` is on for the user (service survives logout)
-- A small launcher script lives at `~/.cookiedclaw/launcher.sh` (per-workspace? no — global, but reads workspace path from a hardcoded constant set at install time)
-- `systemctl --user start cookiedclaw` brings it up; `restart` and `stop` work as expected
+- A small launcher script lives at `~/.cookiedclaw/launcher.sh` (mode 0700, workspace path baked in via heredoc)
+- `systemctl --user start cookiedclaw` brings it up; `daemon-restart` and `stop` work as expected
 
 After this, the user never touches the terminal to restart CC again. Cookie can do it from Telegram.
 
@@ -25,7 +25,7 @@ Send this so the user knows what's about to happen:
 Going daemon mode. After this:
 
   ✓ cookiedclaw survives logout, reboots, crashes (auto-restart)
-  ✓ Cookie can /cookiedclaw:restart itself from Telegram
+  ✓ Cookie can /cookiedclaw:daemon-restart itself from Telegram
   ✓ /cookiedclaw:install-skill works without you touching the terminal
   ✗ You can't `Ctrl+C` the agent anymore — kill via systemctl
   ✗ TUI not directly visible; debug via `tmux attach -t cookiedclaw`
@@ -59,15 +59,33 @@ If neither tmux nor script(1) is available, abort: tell the user to `apt install
 
 If on macOS or another non-Linux: stop here, tell the user this wizard is Linux-only.
 
+### Already-running ad-hoc claude
+
+A live `claude` session polling the same bot token would 409-conflict with the daemon. Refuse to enable if one's running anywhere visible:
+
+```bash
+pgrep -af 'claude.*plugin:cookiedclaw' || true
+```
+
+If anything matches **other than the very session you're running in** (your own pid is fine — you're inside it), abort with: *"Another cookiedclaw process is running (pid X). Exit it first, then re-run /cookiedclaw:enable-daemon."*
+
+### Existing unit from a different workspace
+
+If `~/.config/systemd/user/cookiedclaw.service` already exists, read it and check whether its `WorkingDirectory=` (or the cd path baked into the launcher it points at) matches the current `pwd`. If they differ, **abort** and tell the user:
+
+> A `cookiedclaw.service` unit already exists pointing at a different workspace. The default unit name only holds one workspace at a time. To run multiple cookiedclaw daemons, use a templated unit (`cookiedclaw@<workspace>.service`) — that's a follow-up, not part of this wizard yet.
+
+Do not silently overwrite their other workspace's daemon.
+
 ## Step 2 — Workspace path
 
 Capture the absolute path of the current workspace:
 
 ```bash
-pwd
+WORKSPACE="$(pwd)"
 ```
 
-Store this — the launcher will hardcode it. If `pwd` doesn't end in `cookiedclaw` or doesn't contain `.cookiedclaw/keys.env`, gently confirm with the user that this really is the workspace they want as the daemon's home.
+Store this — the launcher will hardcode it via heredoc. If the path doesn't end in `cookiedclaw` or doesn't contain `.cookiedclaw/keys.env`, gently confirm with the user that this really is the workspace they want as the daemon's home.
 
 ## Step 3 — Linger
 
@@ -77,47 +95,66 @@ systemd user services die when the user logs out unless linger is enabled.
 loginctl enable-linger "$(id -un)"
 ```
 
-Idempotent — safe to re-run.
+This is idempotent. **Verify it actually took** — over SSH without an auth-agent, polkit can silently refuse:
+
+```bash
+loginctl show-user "$(id -un)" --property=Linger
+```
+
+If the output is anything other than `Linger=yes`, abort and tell the user to either run the wizard from a local TTY or set up SSH `auth-agent` forwarding so polkit can prompt them.
 
 ## Step 4 — Launcher script
 
-Write `~/.cookiedclaw/launcher.sh` with the workspace path baked in:
+Pick the launcher template by which TTY wrapper is available (tmux preferred, script(1) fallback). Write it to `~/.cookiedclaw/launcher.sh` using a heredoc — single substitution of `${WORKSPACE}`, no manual placeholder editing:
 
 ```bash
+mkdir -p "$HOME/.cookiedclaw"
+
+# tmux variant
+cat > "$HOME/.cookiedclaw/launcher.sh" <<EOF
 #!/usr/bin/env bash
 # cookiedclaw daemon launcher — generated by /cookiedclaw:enable-daemon
-# Workspace: <ABSOLUTE_PATH_HERE>
 set -euo pipefail
-cd "<ABSOLUTE_PATH_HERE>"
+WORKSPACE='${WORKSPACE}'
+SESSION='cookiedclaw'
 
-SESSION="cookiedclaw"
+cd "\$WORKSPACE"
 
 # Tear down any stale tmux session from a prior run, then start fresh.
-tmux kill-session -t "$SESSION" 2>/dev/null || true
-tmux new-session -d -s "$SESSION" \
+tmux kill-session -t "\$SESSION" 2>/dev/null || true
+tmux new-session -d -s "\$SESSION" \\
   'claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw'
 
 # Block while the tmux session is alive — systemd wants a long-running
 # foreground process. When the session dies (claude exits / crashes),
 # this loop ends and systemd applies its Restart= policy.
-while tmux has-session -t "$SESSION" 2>/dev/null; do
+while tmux has-session -t "\$SESSION" 2>/dev/null; do
   sleep 5
 done
+EOF
+
+chmod 700 "$HOME/.cookiedclaw/launcher.sh"
 ```
 
-`chmod 755` it. Substitute `<ABSOLUTE_PATH_HERE>` with the path captured in Step 2 (both occurrences).
-
-If tmux is unavailable and `script(1)` is the fallback, use this launcher instead:
+If tmux is unavailable and `script(1)` is the fallback, swap the `tmux …` block for:
 
 ```bash
+cat > "$HOME/.cookiedclaw/launcher.sh" <<EOF
 #!/usr/bin/env bash
-# cookiedclaw daemon launcher (script(1) fallback)
+# cookiedclaw daemon launcher (script(1) fallback) — generated by /cookiedclaw:enable-daemon
 set -euo pipefail
-cd "<ABSOLUTE_PATH_HERE>"
-exec script -qfc \
-  'claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw' \
+WORKSPACE='${WORKSPACE}'
+
+cd "\$WORKSPACE"
+exec script -qfc \\
+  'claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw' \\
   /dev/null
+EOF
+
+chmod 700 "$HOME/.cookiedclaw/launcher.sh"
 ```
+
+`chmod 700` is intentional — the workspace path baked into the script is mildly information-leak-y on a multi-user box; defense in depth is cheap here.
 
 ## Step 5 — systemd unit
 
@@ -136,7 +173,6 @@ Restart=always
 RestartSec=5
 # CC sometimes takes a moment to start polling Telegram
 TimeoutStartSec=30
-# Long-running session — never let systemd kill us for slowness
 TimeoutStopSec=20
 
 [Install]
@@ -152,32 +188,32 @@ systemctl --user daemon-reload
 systemctl --user enable cookiedclaw
 ```
 
-Do **not** `start` here. Starting now would collide with the user's currently-running ad-hoc `claude` process — both would poll the same bot token and Telegram returns 409 Conflict.
+Do **not** `start` here — that would collide with the user's currently-running ad-hoc `claude` (Step 1 already refused if it found one, but the user might launch it again between then and now; safer to keep `start` an explicit user act).
 
 ## Step 7 — Tell the user how to switch over
 
 Send this verbatim:
 
 ```
-Daemon installed but not started yet — your current `claude` session
-is still polling the bot. To switch over:
+Daemon installed but not started yet.
 
-  1. In whatever terminal is running `claude` right now, press
+To switch over from your current ad-hoc claude:
+
+  1. In the terminal running `claude` right now, press
      Ctrl+C twice to exit.
-  2. From any terminal (the same one, a new one, an SSH session,
-     anywhere): `systemctl --user start cookiedclaw`
+  2. From any terminal: `systemctl --user start cookiedclaw`
   3. DM the bot — Cookie should respond from inside the daemon.
 
-After this: future restarts go through `/cookiedclaw:restart` from
-Telegram. To live-watch the daemon: `tmux attach -t cookiedclaw`.
-To see logs: `journalctl --user -fu cookiedclaw`.
+After this: future restarts go through `/cookiedclaw:daemon-restart`
+from Telegram. Live-watch: `tmux attach -t cookiedclaw`.
+Logs: `journalctl --user -fu cookiedclaw`.
 
-To roll back: `systemctl --user disable --now cookiedclaw` and resume
-launching `claude` by hand.
+Roll back: `systemctl --user disable --now cookiedclaw`
+and resume launching `claude` by hand.
 ```
 
 ## Notes for you (the agent)
 
-- This wizard is destructive in the sense that it changes how cookiedclaw boots. Do not run it without explicit user invocation — `disable-model-invocation: true` enforces this.
-- Hard-coding the workspace path into the launcher is intentional. Multiple workspaces = multiple unit files, and that conflict has to be solved deliberately, not silently.
-- If the user has multiple cookiedclaw workspaces and runs this wizard from a second one, **abort with a warning** — they need to rename the unit (`cookiedclaw-work.service` etc.) and the tmux session name. Don't auto-overwrite their first daemon.
+- This wizard is destructive in the sense that it changes how cookiedclaw boots. `disable-model-invocation: true` enforces explicit user invocation.
+- Hard-coding the workspace path into the launcher via heredoc is intentional — single source of truth, no manual placeholder substitution that the model could mis-edit.
+- Multiple workspaces require a templated unit (`cookiedclaw@<name>.service` with `WorkingDirectory=%i`). That's a follow-up, not this wizard.
