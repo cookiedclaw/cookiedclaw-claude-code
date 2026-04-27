@@ -1,7 +1,7 @@
 ---
 name: daemon-status
 description: Show the cookiedclaw systemd daemon's current state — running/stopped, last restart, workspace path, recent journalctl tail. Use when the user asks "is cookiedclaw running?", "what's the daemon doing?", or wants a quick health check before debugging.
-allowed-tools: Bash(systemctl --user is-active cookiedclaw) Bash(systemctl --user is-enabled cookiedclaw) Bash(systemctl --user status cookiedclaw --no-pager) Bash(systemctl --user show cookiedclaw --property=*) Bash(journalctl --user -u cookiedclaw *) Read
+allowed-tools: Bash(systemctl --user is-active cookiedclaw) Bash(systemctl --user is-enabled cookiedclaw) Bash(systemctl --user status cookiedclaw --no-pager) Bash(systemctl --user show cookiedclaw --property=*) Bash(journalctl --user -u cookiedclaw --no-pager -n *) Read
 ---
 
 # Daemon status

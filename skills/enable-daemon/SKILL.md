@@ -64,14 +64,14 @@ If on macOS or another non-Linux: stop here, tell the user this wizard is Linux-
 A live `claude` session polling the same bot token would 409-conflict with the daemon. The wizard runs **inside** the very claude process it's looking for, so naive `pgrep` will always match self. Use a count-based check instead — if the count is greater than 1, a second copy is running and we abort:
 
 ```bash
-COUNT="$(pgrep -af 'claude.*plugin:cookiedclaw' | wc -l)"
+COUNT="$(pgrep -af 'claude .*--dangerously-load-development-channels.*plugin:cookiedclaw' | wc -l)"
 if [ "$COUNT" -gt 1 ]; then
   echo "Another cookiedclaw claude process is running. Exit it first, then re-run /cookiedclaw:enable-daemon." >&2
   exit 1
 fi
 ```
 
-This is unambiguous: 1 = just us, the wizard is fine to proceed; >1 = at least one other process exists, abort.
+The pattern is narrow on purpose: matches only the actual launch command, not someone editing this wizard in `vim` or grepping history for "cookiedclaw". Unambiguous: 1 = just us, the wizard is fine to proceed; >1 = at least one other process exists, abort.
 
 ### Existing unit from a different workspace
 
@@ -162,9 +162,12 @@ chmod 700 "$HOME/.cookiedclaw/launcher.sh"
 
 ## Step 5 — systemd unit
 
-Write `~/.config/systemd/user/cookiedclaw.service`:
+Write `~/.config/systemd/user/cookiedclaw.service` via heredoc — same single-substitution discipline as the launcher, so `${WORKSPACE}` is expanded once at write time and there's no manual placeholder to mis-edit:
 
-```ini
+```bash
+mkdir -p "$HOME/.config/systemd/user"
+
+cat > "$HOME/.config/systemd/user/cookiedclaw.service" <<EOF
 [Unit]
 Description=cookiedclaw — Claude Code Telegram channel
 After=network-online.target
@@ -173,8 +176,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 # Workspace path exposed via Environment so /cookiedclaw:daemon-status
-# can read it back via `systemctl show --property=Environment` instead
-# of grepping the launcher script. Substitute ${WORKSPACE} when writing.
+# can read it back via \`systemctl show --property=Environment\` instead
+# of grepping the launcher script.
 Environment=WORKSPACE=${WORKSPACE}
 ExecStart=%h/.cookiedclaw/launcher.sh
 Restart=always
@@ -185,9 +188,8 @@ TimeoutStopSec=20
 
 [Install]
 WantedBy=default.target
+EOF
 ```
-
-`mkdir -p ~/.config/systemd/user/` if needed.
 
 ## Step 6 — Reload systemd, enable
 
