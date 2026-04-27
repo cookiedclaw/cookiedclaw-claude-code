@@ -48,15 +48,15 @@ It's small enough to read in an afternoon (~2k LOC of TypeScript across 14 focus
 Install the plugin from this repo's custom marketplace:
 
 ```bash
-claude plugin marketplace add cookiedclaw/cookiedclaw
-claude plugin install cookiedclaw@cookiedclaw
+claude plugin marketplace add cookiedclaw/cookiedclaw-claude-code
+claude plugin install cookiedclaw@cookiedclaw-claude-code
 ```
 
 Then create a **workspace** for your agent — a directory that becomes its home (identity, paired users, downloaded attachments all live there). Each workspace = one independent agent, so you can have a personal one and a work one side by side.
 
 ```bash
 mkdir -p ~/cookiedclaw && cd ~/cookiedclaw
-claude --enable-auto-mode --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
+claude --enable-auto-mode --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw-claude-code
 ```
 
 Inside that CC session, run the onboarding wizard:
@@ -86,15 +86,15 @@ Restart CC from the same workspace directory, DM your bot, and pair yourself wit
 If you're hacking on cookiedclaw itself:
 
 ```bash
-git clone git@github.com:cookiedclaw/cookiedclaw.git
-cd cookiedclaw
+git clone git@github.com:cookiedclaw/cookiedclaw-claude-code.git
+cd cookiedclaw-claude-code
 bun install
 
 # Run from a separate workspace directory so identity files don't land in the repo
 mkdir -p ~/cookied-dev && cd ~/cookied-dev
 claude --enable-auto-mode \
-       --plugin-dir ~/projects/bots/cookiedclaw \
-       --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
+       --plugin-dir ~/projects/bots/cookiedclaw-claude-code \
+       --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw-claude-code
 ```
 
 `.mcp.json` uses `${CLAUDE_PLUGIN_ROOT}` so CC must load the cloned dir as a plugin (`--plugin-dir`). Workspace state (keys, identity, access list) lives in whatever dir you run `claude` from — keep that separate from the source repo.
@@ -161,11 +161,11 @@ Once configured, you usually want cookiedclaw running 24/7 — not tied to your 
 ```bash
 ssh -L 8080:localhost:8080 user@your-server   # one-time, port-forward for the OAuth flow
 claude /login                                  # browser auth — happens once
-claude plugin marketplace add cookiedclaw/cookiedclaw
-claude plugin install cookiedclaw@cookiedclaw
+claude plugin marketplace add cookiedclaw/cookiedclaw-claude-code
+claude plugin install cookiedclaw@cookiedclaw-claude-code
 mkdir -p ~/cookiedclaw && cd ~/cookiedclaw    # workspace dir
 tmux new -s cookied
-claude --enable-auto-mode --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw
+claude --enable-auto-mode --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw-claude-code
 # Run /cookiedclaw:setup inside CC the first time
 # Ctrl+b d  to detach — session keeps running, you can exit SSH
 ```

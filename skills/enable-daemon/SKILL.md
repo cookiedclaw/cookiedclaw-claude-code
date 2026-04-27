@@ -139,7 +139,7 @@ cd "\$WORKSPACE"
 # fresh on top of that as part of the normal session start.
 tmux kill-session -t "\$SESSION" 2>/dev/null || true
 tmux new-session -d -s "\$SESSION" \\
-  'claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw --continue'
+  'claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw-claude-code --continue'
 
 # Block while the tmux session is alive — systemd wants a long-running
 # foreground process. When the session dies (claude exits / crashes),
@@ -166,7 +166,7 @@ export PATH="\$HOME/.bun/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 cd "\$WORKSPACE"
 exec script -qfc \\
-  'claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw --continue' \\
+  'claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw-claude-code --continue' \\
   /dev/null
 EOF
 
