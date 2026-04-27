@@ -2,7 +2,7 @@
 name: enable-daemon
 description: One-time onboarding wizard that turns the current ad-hoc Claude Code launch into a systemd-managed daemon. After this, cookiedclaw survives logout, reboots, and crashes — and the agent can restart itself remotely from Telegram via /cookiedclaw:daemon-restart. Run this once per workspace, from inside the workspace directory.
 disable-model-invocation: true
-allowed-tools: Bash(uname *) Bash(which *) Bash(command -v *) Bash(loginctl enable-linger *) Bash(loginctl show-user *) Bash(systemctl --user daemon-reload) Bash(systemctl --user enable cookiedclaw) Bash(systemctl --user is-active cookiedclaw) Bash(systemctl --user is-enabled cookiedclaw) Bash(mkdir -p *) Bash(test *) Bash(pwd) Bash(id -un) Bash(getent passwd *) Bash(pgrep -af *) Bash(chmod 700 *) Bash(chmod 755 *) Read Write Edit
+allowed-tools: Bash(uname *) Bash(which *) Bash(command -v *) Bash(loginctl enable-linger *) Bash(loginctl show-user *) Bash(systemctl --user daemon-reload) Bash(systemctl --user enable cookiedclaw) Bash(systemctl --user is-active cookiedclaw) Bash(systemctl --user is-enabled cookiedclaw) Bash(mkdir -p *) Bash(test *) Bash(pwd) Bash(id -un) Bash(getent passwd *) Bash(pgrep -af *) Bash(wc -l) Bash(chmod 700 *) Read Write Edit
 ---
 
 # Going daemon
@@ -61,13 +61,17 @@ If on macOS or another non-Linux: stop here, tell the user this wizard is Linux-
 
 ### Already-running ad-hoc claude
 
-A live `claude` session polling the same bot token would 409-conflict with the daemon. Refuse to enable if one's running anywhere visible:
+A live `claude` session polling the same bot token would 409-conflict with the daemon. The wizard runs **inside** the very claude process it's looking for, so naive `pgrep` will always match self. Use a count-based check instead — if the count is greater than 1, a second copy is running and we abort:
 
 ```bash
-pgrep -af 'claude.*plugin:cookiedclaw' || true
+COUNT="$(pgrep -af 'claude.*plugin:cookiedclaw' | wc -l)"
+if [ "$COUNT" -gt 1 ]; then
+  echo "Another cookiedclaw claude process is running. Exit it first, then re-run /cookiedclaw:enable-daemon." >&2
+  exit 1
+fi
 ```
 
-If anything matches **other than the very session you're running in** (your own pid is fine — you're inside it), abort with: *"Another cookiedclaw process is running (pid X). Exit it first, then re-run /cookiedclaw:enable-daemon."*
+This is unambiguous: 1 = just us, the wizard is fine to proceed; >1 = at least one other process exists, abort.
 
 ### Existing unit from a different workspace
 
@@ -85,7 +89,7 @@ Capture the absolute path of the current workspace:
 WORKSPACE="$(pwd)"
 ```
 
-Store this — the launcher will hardcode it via heredoc. If the path doesn't end in `cookiedclaw` or doesn't contain `.cookiedclaw/keys.env`, gently confirm with the user that this really is the workspace they want as the daemon's home.
+Store this — the launcher will hardcode it via heredoc. If `$WORKSPACE/.cookiedclaw/keys.env` doesn't exist, gently confirm with the user that this really is the workspace they want as the daemon's home — that file is the unambiguous "this is a cookiedclaw workspace" marker.
 
 ## Step 3 — Linger
 
@@ -168,6 +172,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# Workspace path exposed via Environment so /cookiedclaw:daemon-status
+# can read it back via `systemctl show --property=Environment` instead
+# of grepping the launcher script. Substitute ${WORKSPACE} when writing.
+Environment=WORKSPACE=${WORKSPACE}
 ExecStart=%h/.cookiedclaw/launcher.sh
 Restart=always
 RestartSec=5
