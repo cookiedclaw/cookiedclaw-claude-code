@@ -1,21 +1,19 @@
 ---
 name: enable-daemon
-description: One-time onboarding wizard that turns the current ad-hoc Claude Code launch into a systemd-managed daemon. After this, cookiedclaw survives logout, reboots, and crashes — and the agent can restart itself remotely from Telegram via /cookiedclaw:daemon-restart. Run this once per workspace, from inside the workspace directory.
+description: One-time onboarding wizard. Downloads the cookiedclaw gateway binary from GitHub releases, generates a Bearer token, writes two systemd --user units (gateway + CC daemon), and tells the user how to start them. After this, cookiedclaw survives logout, reboots, and crashes — and the agent can restart itself remotely from Telegram via /cookiedclaw:daemon-restart. Run once per workspace, from inside the workspace directory.
 disable-model-invocation: true
-allowed-tools: Bash(uname *) Bash(which *) Bash(command -v *) Bash(loginctl enable-linger *) Bash(loginctl show-user *) Bash(systemctl --user daemon-reload) Bash(systemctl --user enable cookiedclaw) Bash(systemctl --user is-active cookiedclaw) Bash(systemctl --user is-enabled cookiedclaw) Bash(mkdir -p *) Bash(test *) Bash(pwd) Bash(id -un) Bash(getent passwd *) Bash(ps -e -o *) Bash(awk *) Bash(wc -l) Bash(chmod 700 *) Read Write Edit
+allowed-tools: Bash(uname *) Bash(which *) Bash(command -v *) Bash(loginctl enable-linger *) Bash(loginctl show-user *) Bash(systemctl --user daemon-reload) Bash(systemctl --user enable *) Bash(systemctl --user is-active *) Bash(systemctl --user is-enabled *) Bash(mkdir -p *) Bash(test *) Bash(pwd) Bash(id -un) Bash(getent passwd *) Bash(ps -e -o *) Bash(awk *) Bash(wc -l) Bash(chmod 700 *) Bash(chmod 600 *) Bash(curl -fsSL *) Bash(curl -fsSLo *) Bash(sha256sum *) Bash(openssl rand *) Bash(grep -q *) Bash(echo *) Read Write Edit
 ---
 
 # Going daemon
 
-You are walking the user through converting their **current workspace** from a hand-launched `claude --dangerously-load-development-channels …` into a `systemd --user`-managed service.
+You are walking the user through converting their **current workspace** from a hand-launched `claude --dangerously-load-development-channels …` into a `systemd --user`-managed daemon. After this:
 
-The end state:
-- `~/.config/systemd/user/cookiedclaw.service` exists and is enabled
-- `loginctl enable-linger` is on for the user (service survives logout)
-- A small launcher script lives at `~/.cookiedclaw/launcher.sh` (mode 0700, workspace path baked in via heredoc)
-- `systemctl --user start cookiedclaw` brings it up; `daemon-restart` and `stop` work as expected
+- A `cookiedclaw-gateway` binary lives at `~/.cookiedclaw/bin/` and runs as `cookiedclaw-gateway.service`. It owns Telegram polling and the MCP-over-HTTP server.
+- A separate `cookiedclaw.service` unit runs Claude Code in a tmux session, with the adapter pointing at the gateway over HTTP.
+- Both auto-restart on crash, survive logout (linger), and start on boot.
 
-After this, the user never touches the terminal to restart CC again. Cookie can do it from Telegram.
+The user never touches the terminal to restart again. Cookie can do it from Telegram via `/cookiedclaw:daemon-restart`.
 
 ## Step 0 — Greet, name the trade-offs
 
@@ -29,7 +27,7 @@ Going daemon mode. After this:
   ✓ /cookiedclaw:install-skill works without you touching the terminal
   ✗ You can't `Ctrl+C` the agent anymore — kill via systemctl
   ✗ TUI not directly visible; debug via `tmux attach -t cookiedclaw`
-    (or `journalctl --user -fu cookiedclaw` for raw logs)
+    (or `journalctl --user -fu cookiedclaw cookiedclaw-gateway`)
 
 Linux + systemd only. macOS users: the wizard exits, see launchd notes
 in the README.
@@ -37,33 +35,27 @@ in the README.
 
 ## Step 1 — Pre-flight checks
 
-Run all of these and fail fast if anything is missing. Do not patch around — surface the problem.
+Run all of these and fail fast if anything is missing:
 
 ```bash
-# Linux check
-uname -s
-# Expect: Linux
-
-# systemd check
-command -v systemctl
-# Expect: a path (typically /usr/bin/systemctl)
-
-# tmux check (preferred TTY wrapper)
-command -v tmux
-
-# script(1) fallback if no tmux
-command -v script
+uname -s                                # expect Linux
+command -v systemctl                    # expect a path
+command -v tmux                         # preferred TTY wrapper
+command -v script                       # script(1) fallback if no tmux
+command -v curl                         # for downloading the binary
+command -v openssl                      # for generating GATEWAY_TOKEN
+command -v sha256sum                    # for verifying the binary
 ```
 
-If neither tmux nor script(1) is available, abort: tell the user to `apt install tmux` (Debian/Ubuntu/Pi) or `dnf install tmux` (Fedora) and re-run the wizard.
+If any of `tmux` (or fallback `script`), `curl`, `openssl`, `sha256sum` is missing, abort with a one-line apt install hint and exit. Don't try to install for the user.
 
-If on macOS or another non-Linux: stop here, tell the user this wizard is Linux-only.
+If on macOS or another non-Linux: stop, tell the user this wizard is Linux-only.
 
 ### Already-running ad-hoc claude
 
 A live `claude` session polling the same bot token would 409-conflict with the daemon. The wizard runs **inside** the very claude process it's looking for, so the host claude is expected to count as one — anything beyond that is a second copy and we abort.
 
-`pgrep -af 'claude .*plugin:cookiedclaw'` would seem natural here, but it has a sneaky bug: `pgrep -af` matches against full argv across the whole process tree, and the bash subshell that the agent spawns to run this very check has the pattern as a literal in its own argv (it's the `bash -c` command line). The pgrep-runner self-matches and inflates the count by one or more. We use `ps` + `awk` instead — filtering by `comm` (the kernel process name from `/proc/[pid]/comm`, *not* argv) bypasses the self-match entirely, since the runner is `bash`/`awk`/`ps`, never `claude`:
+`pgrep` would self-match the bash subshell whose argv contains the search pattern. Use `ps -e -o comm=,args=` filtered by `comm` (kernel process name from `/proc/[pid]/comm`, not argv) — `bash`/`awk`/`ps` won't match `claude`:
 
 ```bash
 COUNT="$(ps -e -o comm=,args= | awk '$1=="claude" && /plugin:cookiedclaw/' | wc -l)"
@@ -73,77 +65,134 @@ if [ "$COUNT" -gt 1 ]; then
 fi
 ```
 
-`ps -e -o comm=,args=` prints `<comm> <full-args>` (the trailing `=` strips column headers). `$1=="claude"` keeps only rows whose kernel-side process name is exactly `claude`, then `/plugin:cookiedclaw/` narrows to rows whose argv contains the plugin token. Unambiguous: 1 = just the host claude running this wizard, fine to proceed; >1 = another copy exists, abort.
+### Existing units from a different workspace
 
-### Existing unit from a different workspace
+If `~/.config/systemd/user/cookiedclaw.service` or `~/.config/systemd/user/cookiedclaw-gateway.service` already exists, read them and check whether their workspace paths match the current `pwd`. If they differ, **abort** and tell the user:
 
-If `~/.config/systemd/user/cookiedclaw.service` already exists, read it and check whether its `WorkingDirectory=` (or the cd path baked into the launcher it points at) matches the current `pwd`. If they differ, **abort** and tell the user:
+> Existing cookiedclaw units already point at a different workspace. The default unit names only hold one workspace at a time. To run multiple cookiedclaw daemons, use templated units (`cookiedclaw@<workspace>.service`) — that's a follow-up, not part of this wizard yet.
 
-> A `cookiedclaw.service` unit already exists pointing at a different workspace. The default unit name only holds one workspace at a time. To run multiple cookiedclaw daemons, use a templated unit (`cookiedclaw@<workspace>.service`) — that's a follow-up, not part of this wizard yet.
-
-Do not silently overwrite their other workspace's daemon.
+Do not silently overwrite a working setup from a different workspace.
 
 ## Step 2 — Workspace path
-
-Capture the absolute path of the current workspace:
 
 ```bash
 WORKSPACE="$(pwd)"
 ```
 
-Store this — the launcher will hardcode it via heredoc. If `$WORKSPACE/.cookiedclaw/keys.env` doesn't exist, gently confirm with the user that this really is the workspace they want as the daemon's home — that file is the unambiguous "this is a cookiedclaw workspace" marker.
+If `$WORKSPACE/.cookiedclaw/keys.env` doesn't exist, gently confirm with the user that this really is the workspace they want — that file is the unambiguous "this is a cookiedclaw workspace" marker (created by `/cookiedclaw:setup`).
 
 ## Step 3 — Linger
-
-systemd user services die when the user logs out unless linger is enabled.
 
 ```bash
 loginctl enable-linger "$(id -un)"
 ```
 
-This is idempotent. **Verify it actually took** — over SSH without an auth-agent, polkit can silently refuse:
+Idempotent. Verify it took (over SSH without auth-agent forwarding, polkit can silently refuse):
 
 ```bash
 loginctl show-user "$(id -un)" --property=Linger
 ```
 
-If the output is anything other than `Linger=yes`, abort and tell the user to either run the wizard from a local TTY or set up SSH `auth-agent` forwarding so polkit can prompt them.
+If output isn't `Linger=yes`, abort with the explanation that the user needs a local TTY or SSH auth-agent forwarding for polkit to prompt.
 
-## Step 4 — Launcher script
+## Step 4 — GATEWAY_TOKEN
 
-Pick the launcher template by which TTY wrapper is available (tmux preferred, script(1) fallback). Write it to `~/.cookiedclaw/launcher.sh` using a heredoc — single substitution of `${WORKSPACE}`, no manual placeholder editing:
+The gateway authenticates inbound MCP requests with a Bearer token. The adapter's `.mcp.json` reads it from `COOKIEDCLAW_GATEWAY_TOKEN`. We generate one if `keys.env` doesn't already have it (idempotent — re-running the wizard preserves an existing token):
+
+```bash
+if ! grep -q "^COOKIEDCLAW_GATEWAY_TOKEN=" "$WORKSPACE/.cookiedclaw/keys.env" 2>/dev/null; then
+  TOKEN="$(openssl rand -hex 32)"
+  echo "COOKIEDCLAW_GATEWAY_TOKEN=$TOKEN" >> "$WORKSPACE/.cookiedclaw/keys.env"
+  chmod 600 "$WORKSPACE/.cookiedclaw/keys.env"
+fi
+```
+
+Don't echo the token back to the user. They typed (or generated) it; treat it as a secret.
+
+## Step 5 — Download the gateway binary
+
+The gateway ships as a single self-contained executable per platform via GitHub releases.
+
+Detect platform:
+
+```bash
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64)        PLATFORM="linux-x64"     ;;
+  Linux-aarch64)       PLATFORM="linux-arm64"   ;;
+  Darwin-arm64)        PLATFORM="darwin-arm64"  ;;
+  Darwin-x86_64)       PLATFORM="darwin-x64"    ;;
+  *)
+    echo "Unsupported platform: $(uname -s)-$(uname -m). Open an issue at https://github.com/cookiedclaw/cookiedclaw/issues." >&2
+    exit 1
+    ;;
+esac
+```
+
+Download the binary + checksum from the latest release (`releases/latest/download/<name>` is GitHub's standard latest-redirect):
+
+```bash
+mkdir -p "$HOME/.cookiedclaw/bin"
+BINARY_URL="https://github.com/cookiedclaw/cookiedclaw/releases/latest/download/cookiedclaw-gateway-${PLATFORM}"
+SHA_URL="${BINARY_URL}.sha256"
+
+curl -fsSLo "$HOME/.cookiedclaw/bin/cookiedclaw-gateway" "$BINARY_URL"
+curl -fsSLo "$HOME/.cookiedclaw/bin/cookiedclaw-gateway.sha256" "$SHA_URL"
+```
+
+Verify checksum (the release workflow generates these alongside each binary):
+
+```bash
+cd "$HOME/.cookiedclaw/bin"
+# The .sha256 file's filename column references the binary name relative
+# to where it was generated; regenerate locally and compare digests
+# directly to keep the comparison robust to path differences.
+EXPECTED="$(awk '{print $1}' cookiedclaw-gateway.sha256)"
+ACTUAL="$(sha256sum cookiedclaw-gateway | awk '{print $1}')"
+if [ "$EXPECTED" != "$ACTUAL" ]; then
+  echo "FATAL: checksum mismatch on cookiedclaw-gateway binary." >&2
+  echo "  expected: $EXPECTED" >&2
+  echo "  actual:   $ACTUAL" >&2
+  rm -f cookiedclaw-gateway cookiedclaw-gateway.sha256
+  exit 1
+fi
+chmod 700 cookiedclaw-gateway
+cd -
+```
+
+If the checksum fails, the download was corrupted or tampered with — abort and bin the partial download.
+
+## Step 6 — Launcher script (CC side)
+
+The CC daemon launcher needs to inherit `COOKIEDCLAW_GATEWAY_TOKEN` so the adapter's `.mcp.json` substitution works. Source `keys.env` before exec'ing claude:
 
 ```bash
 mkdir -p "$HOME/.cookiedclaw"
 
-# tmux variant
 cat > "$HOME/.cookiedclaw/launcher.sh" <<EOF
 #!/usr/bin/env bash
-# cookiedclaw daemon launcher — generated by /cookiedclaw:enable-daemon
+# cookiedclaw CC-daemon launcher — generated by /cookiedclaw:enable-daemon
 set -euo pipefail
 WORKSPACE='${WORKSPACE}'
 SESSION='cookiedclaw'
 
-# systemd --user services start with a minimal PATH (just /usr/bin etc).
-# Bun lives in ~/.bun/bin, claude in ~/.local/bin (from the official
-# installer), and either could be missing from the inherited PATH.
-# Inject them up-front so MCP servers that shell out to \`bun\` or \`npx\`
-# don't fall over with "command not found".
-export PATH="\$HOME/.bun/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+# Inherit COOKIEDCLAW_GATEWAY_TOKEN (and any other workspace secrets)
+# from keys.env so the adapter's .mcp.json placeholder substitution
+# resolves at claude startup.
+set -a
+. "\$WORKSPACE/.cookiedclaw/keys.env"
+set +a
+
+# systemd --user services start with a minimal PATH. Inject common
+# user-install bin dirs so claude (~/.local/bin) and any tools the
+# session shells out to (~/.bun/bin) resolve.
+export PATH="\$HOME/.local/bin:\$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin"
 
 cd "\$WORKSPACE"
 
-# Tear down any stale tmux session from a prior run, then start fresh.
-# --continue restores the previous CC conversation so identity + recent
-# context survive the restart; identity files (IDENTITY/USER/SOUL) load
-# fresh on top of that as part of the normal session start.
 tmux kill-session -t "\$SESSION" 2>/dev/null || true
 tmux new-session -d -s "\$SESSION" \\
   'claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw-claude-code --continue'
 
-# Block while the tmux session is alive — systemd wants a long-running
-# foreground process. When the session dies (claude exits / crashes),
-# this loop ends and systemd applies its Restart= policy.
 while tmux has-session -t "\$SESSION" 2>/dev/null; do
   sleep 5
 done
@@ -152,52 +201,28 @@ EOF
 chmod 700 "$HOME/.cookiedclaw/launcher.sh"
 ```
 
-If tmux is unavailable and `script(1)` is the fallback, swap the `tmux …` block for:
+If tmux is unavailable, swap the `tmux` block for `script(1)` (same fallback as before — see prior version of this file in git history if needed).
+
+## Step 7 — Two systemd units
+
+`mkdir -p ~/.config/systemd/user/`, then write **gateway** unit:
 
 ```bash
-cat > "$HOME/.cookiedclaw/launcher.sh" <<EOF
-#!/usr/bin/env bash
-# cookiedclaw daemon launcher (script(1) fallback) — generated by /cookiedclaw:enable-daemon
-set -euo pipefail
-WORKSPACE='${WORKSPACE}'
-
-# See PATH note in the tmux variant — same reason.
-export PATH="\$HOME/.bun/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
-
-cd "\$WORKSPACE"
-exec script -qfc \\
-  'claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw-claude-code --continue' \\
-  /dev/null
-EOF
-
-chmod 700 "$HOME/.cookiedclaw/launcher.sh"
-```
-
-`chmod 700` is intentional — the workspace path baked into the script is mildly information-leak-y on a multi-user box; defense in depth is cheap here.
-
-## Step 5 — systemd unit
-
-Write `~/.config/systemd/user/cookiedclaw.service` via heredoc — same single-substitution discipline as the launcher, so `${WORKSPACE}` is expanded once at write time and there's no manual placeholder to mis-edit:
-
-```bash
-mkdir -p "$HOME/.config/systemd/user"
-
-cat > "$HOME/.config/systemd/user/cookiedclaw.service" <<EOF
+cat > "$HOME/.config/systemd/user/cookiedclaw-gateway.service" <<EOF
 [Unit]
-Description=cookiedclaw — Claude Code Telegram channel
+Description=cookiedclaw gateway — MCP-over-HTTP + Telegram polling
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-# Workspace path exposed via Environment so /cookiedclaw:daemon-status
-# can read it back via \`systemctl show --property=Environment\` instead
-# of grepping the launcher script.
+EnvironmentFile=${WORKSPACE}/.cookiedclaw/keys.env
+Environment=GATEWAY_PORT=47390
 Environment=WORKSPACE=${WORKSPACE}
-ExecStart=%h/.cookiedclaw/launcher.sh
+WorkingDirectory=${WORKSPACE}
+ExecStart=%h/.cookiedclaw/bin/cookiedclaw-gateway
 Restart=always
 RestartSec=5
-# CC sometimes takes a moment to start polling Telegram
 TimeoutStartSec=30
 TimeoutStopSec=20
 
@@ -206,18 +231,42 @@ WantedBy=default.target
 EOF
 ```
 
-## Step 6 — Reload systemd, enable
+…and **CC daemon** unit (depends on the gateway being up):
+
+```bash
+cat > "$HOME/.config/systemd/user/cookiedclaw.service" <<EOF
+[Unit]
+Description=cookiedclaw — Claude Code session connected to the gateway
+After=cookiedclaw-gateway.service network-online.target
+Wants=cookiedclaw-gateway.service network-online.target
+Requires=cookiedclaw-gateway.service
+
+[Service]
+Type=simple
+Environment=WORKSPACE=${WORKSPACE}
+ExecStart=%h/.cookiedclaw/launcher.sh
+Restart=always
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target
+EOF
+```
+
+The `Requires=` + `After=` make systemd start the gateway first and stop the CC daemon if the gateway dies — the adapter is useless without the gateway anyway.
+
+## Step 8 — Reload + enable
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable cookiedclaw
+systemctl --user enable cookiedclaw-gateway cookiedclaw
 ```
 
-Do **not** `start` here — that would collide with the user's currently-running ad-hoc `claude` (Step 1 already refused if it found one, but the user might launch it again between then and now; safer to keep `start` an explicit user act).
+Do **not** `start` here — that would collide with the user's currently-running ad-hoc `claude` (Step 1's pgrep check rejected concurrent claudes already, but the user might launch one between steps; safer to keep `start` an explicit user act).
 
-## Step 7 — Tell the user how to switch over
-
-Send this verbatim:
+## Step 9 — Tell the user how to switch over
 
 ```
 Daemon installed but not started yet.
@@ -226,19 +275,26 @@ To switch over from your current ad-hoc claude:
 
   1. In the terminal running `claude` right now, press
      Ctrl+C twice to exit.
-  2. From any terminal: `systemctl --user start cookiedclaw`
+  2. From any terminal:
+       systemctl --user start cookiedclaw-gateway cookiedclaw
+     (the gateway starts first; CC follows once it's up)
   3. DM the bot — Cookie should respond from inside the daemon.
 
-After this: future restarts go through `/cookiedclaw:daemon-restart`
-from Telegram. Live-watch: `tmux attach -t cookiedclaw`.
-Logs: `journalctl --user -fu cookiedclaw`.
+After this:
+  • Future restarts: /cookiedclaw:daemon-restart from Telegram
+  • Live-watch CC TUI: tmux attach -t cookiedclaw
+  • Live logs:
+      journalctl --user -fu cookiedclaw-gateway
+      journalctl --user -fu cookiedclaw
 
-Roll back: `systemctl --user disable --now cookiedclaw`
-and resume launching `claude` by hand.
+Roll back:
+  systemctl --user disable --now cookiedclaw cookiedclaw-gateway
+  rm -rf ~/.cookiedclaw/bin
 ```
 
 ## Notes for you (the agent)
 
-- This wizard is destructive in the sense that it changes how cookiedclaw boots. `disable-model-invocation: true` enforces explicit user invocation.
-- Hard-coding the workspace path into the launcher via heredoc is intentional — single source of truth, no manual placeholder substitution that the model could mis-edit.
-- Multiple workspaces require a templated unit (`cookiedclaw@<name>.service` with `WorkingDirectory=%i`). That's a follow-up, not this wizard.
+- `disable-model-invocation: true` enforces explicit user invocation — this wizard rewrites how cookiedclaw boots and shouldn't fire on a heuristic.
+- The token written to `keys.env` is sensitive. Never echo it back to the user, never include it in commit messages, never paste it into a Telegram reply. The chmod 600 on keys.env keeps it user-only.
+- The downloaded binary is checksum-verified against the release artifact. If the checksum fails, abort — don't try to "repair" or "retry without verifying"; that's where supply-chain bugs slip in.
+- Multiple workspaces require templated units (`cookiedclaw@<name>.service` with `WorkingDirectory=%i`). Out of scope for this wizard; tracked in https://github.com/cookiedclaw/cookiedclaw-claude-code/issues/2.
