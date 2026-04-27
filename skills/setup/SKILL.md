@@ -196,7 +196,16 @@ Already written in Step 2. Just confirm `chmod 600` is set.
 
 Summarize what got configured (workspace path, files written). Then:
 
-- Tell them **restart Claude Code from this directory** so the channel server picks up the token: `cd <workspace-path> && claude --enable-auto-mode --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw-claude-code`. CC needs to be in this dir for `CLAUDE.md` auto-injection to work. **Strongly recommend `--enable-auto-mode`** — without it CC pauses to ask "are you sure?" before each non-trivial tool, which is fine in a terminal but painful when the user is driving from Telegram. Risky tools still go through the inline-button permission relay, so safety isn't lost.
+> [!IMPORTANT]
+> **Setup configures identity + keys, but the bot can't actually answer DMs yet.** The cookiedclaw gateway (the always-on Telegram poller + MCP server) hasn't been installed. The very next step the user should take is:
+>
+> ```
+> /cookiedclaw:enable-daemon
+> ```
+>
+> That wizard downloads the gateway binary from GitHub releases, generates the Bearer token the adapter needs, writes systemd units, and tells the user how to start the whole setup. Tell them this clearly — running `/setup` then trying to DM the bot without `/enable-daemon` will leave them with no responses and no clear error.
+
+- Once `/cookiedclaw:enable-daemon` is done and the user has run `systemctl --user start cookiedclaw-gateway cookiedclaw`, restarting CC from this directory picks up the token: `cd <workspace-path> && claude --enable-auto-mode --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw-claude-code`. CC needs to be in this dir for `CLAUDE.md` auto-injection to work. **Strongly recommend `--enable-auto-mode`** — without it CC pauses to ask "are you sure?" before each non-trivial tool, which is fine in a terminal but painful when the user is driving from Telegram. Risky tools still go through the inline-button permission relay, so safety isn't lost.
 - Briefly explain the workspace-file lifecycle:
   - `./CLAUDE.md` → system prompt, auto-loaded by CC every session, edit if you want to tweak agent behavior
   - `./BOOTSTRAP.md` → discovery script, self-deletes after first run
