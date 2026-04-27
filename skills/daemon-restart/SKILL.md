@@ -1,7 +1,7 @@
 ---
 name: daemon-restart
 description: Restart the cookiedclaw Claude Code session via its systemd user unit. Use after installing a new skill / plugin / MCP server (anything that's only discovered at startup), or when the agent itself asks to be reborn. Requires `/cookiedclaw:enable-daemon` to have been run first.
-allowed-tools: Bash(systemctl --user restart cookiedclaw) Bash(systemctl --user is-active cookiedclaw) Bash(systemctl --user status cookiedclaw --no-pager)
+allowed-tools: Bash(setsid bash -c *) Bash(systemctl --user is-active cookiedclaw) Bash(systemctl --user status cookiedclaw --no-pager)
 ---
 
 # Restart cookiedclaw
@@ -24,13 +24,13 @@ Send a Telegram message warning the user, because the next thing that happens is
 
 > 🔄 Restarting cookiedclaw — I'll be back in a few seconds. Conversation context will reset, but identity files (IDENTITY/USER/SOUL) are reread on boot.
 
-Then issue the restart:
+Then issue the restart in a detached subshell so this skill returns before systemd kills the channel server (otherwise the warning message above might not flush to Telegram in time):
 
 ```bash
-systemctl --user restart cookiedclaw
+setsid bash -c 'sleep 2; systemctl --user restart cookiedclaw' </dev/null >/dev/null 2>&1 &
 ```
 
-This call may or may not return before systemd sends SIGTERM to your own process. Either way, do not try to send another Telegram message after issuing the restart — the channel server is going down with you.
+The 2-second sleep is the safety window: this skill returns immediately, the channel server flushes the warning to Telegram, then systemd restarts everything. End your turn after issuing this — don't try to send another message; the channel server is going down with you.
 
 ## After restart
 

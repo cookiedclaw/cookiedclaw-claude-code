@@ -1,7 +1,7 @@
 ---
 name: install-skill
 description: Install an agent skill from skills.sh (or any GitHub repo) into the user-global skills directory and restart the cookiedclaw daemon so the new skill becomes discoverable. Use when the user says "install skill X", "add the foo skill", or "поставь скилл на bar". Requires daemon mode enabled (`/cookiedclaw:enable-daemon`).
-allowed-tools: Bash(npx --yes skills add *) Bash(npx --yes skills find *) Bash(systemctl --user restart cookiedclaw) Bash(systemctl --user is-active cookiedclaw) Bash(ls -la *) Bash(sleep 3) Bash(setsid *) Read
+allowed-tools: Bash(npx --yes skills add *) Bash(npx --yes skills find *) Bash(systemctl --user is-active cookiedclaw) Bash(ls -la *) Bash(setsid bash -c *) Read
 ---
 
 # Install a skill remotely
@@ -60,10 +60,10 @@ CC scans skills only at startup. Tell the user via Telegram what just happened, 
 Then issue the restart in a detached subshell so this skill's `await` completes before systemd kills the process:
 
 ```bash
-setsid bash -c 'sleep 1; systemctl --user restart cookiedclaw' </dev/null >/dev/null 2>&1 &
+setsid bash -c 'sleep 2; systemctl --user restart cookiedclaw' </dev/null >/dev/null 2>&1 &
 ```
 
-The 1-second sleep is the safety window: this skill returns immediately, the channel server flushes the "Installed" message to Telegram, then systemd restarts everything.
+The 2-second sleep is the safety window: this skill returns immediately, the channel server flushes the "Installed" message to Telegram (Telegram round-trip is typically 200–500ms but can spike past 1s on slow networks or rate limits), then systemd restarts everything.
 
 After the detached restart, end your turn — don't try to send another Telegram message. The channel server is going down.
 

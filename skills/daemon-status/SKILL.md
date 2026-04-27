@@ -1,7 +1,7 @@
 ---
 name: daemon-status
 description: Show the cookiedclaw systemd daemon's current state — running/stopped, last restart, workspace path, recent journalctl tail. Use when the user asks "is cookiedclaw running?", "what's the daemon doing?", or wants a quick health check before debugging.
-allowed-tools: Bash(systemctl --user is-active cookiedclaw) Bash(systemctl --user is-enabled cookiedclaw) Bash(systemctl --user status cookiedclaw --no-pager *) Bash(systemctl --user show cookiedclaw --property=*) Bash(journalctl --user -u cookiedclaw *) Bash(test *) Bash(cat *) Read
+allowed-tools: Bash(systemctl --user is-active cookiedclaw) Bash(systemctl --user is-enabled cookiedclaw) Bash(systemctl --user status cookiedclaw --no-pager) Bash(systemctl --user show cookiedclaw --property=*) Bash(journalctl --user -u cookiedclaw *) Read
 ---
 
 # Daemon status
@@ -19,15 +19,14 @@ systemctl --user is-active cookiedclaw
 # Is it enabled to start at boot?
 systemctl --user is-enabled cookiedclaw
 
-# When did it last (re)start? — ActiveEnterTimestamp is the field
-systemctl --user show cookiedclaw --property=ActiveEnterTimestamp,MainPID,Restarts,SubState
-
-# Workspace path (read from the launcher script)
-test -f "$HOME/.cookiedclaw/launcher.sh" && grep -m1 '^WORKSPACE=' "$HOME/.cookiedclaw/launcher.sh"
+# When did it last (re)start, what's the pid, etc — combined call
+systemctl --user show cookiedclaw --property=ActiveEnterTimestamp,MainPID,Restarts,SubState,Environment
 
 # Last 15 log lines for context
 journalctl --user -u cookiedclaw --no-pager -n 15
 ```
+
+The `Environment=WORKSPACE=…` line in `systemctl show` output is set by the unit (see `enable-daemon` Step 5). Parse it out for display.
 
 ## How to present
 
