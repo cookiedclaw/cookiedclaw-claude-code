@@ -30,7 +30,7 @@ It's small enough to read in an afternoon (~2k LOC of TypeScript across 14 focus
 
 ## Features
 
-- **Live tool progress** — a single message edits in place as CC runs tools (`⏳ Bash: ls -la` → `✓ Bash: ls -la (45ms)`). Pre/PostToolUse hooks → localhost endpoint → `editMessage`. Broadcasts to every chat that's mid-turn so multi-user conversations don't lose their feed. Activity that fires *after* the visible reply (sub-agents finishing, post-task edits to identity files, etc.) keeps streaming into the same progress message until the next user message — see [Why tool progress continues after the reply](#why-tool-progress-continues-after-the-reply).
+- **Live tool progress** — a single message edits in place as CC runs tools (`⏳ Bash: ls -la` → `✓ Bash: ls -la (45ms)`). Tool activity that fires *after* the visible reply (sub-agents wrapping up, post-task edits to identity files) keeps streaming into the same progress message until your next message — that's the bot finishing up, not stuck.
 - **Permission relay** — CC's tool-approval prompts (Bash, Write, Edit, …) come through Telegram as `[✓ Allow]` / `[✗ Deny]` inline buttons. The local terminal dialog stays open in parallel — first answer wins.
 - **MarkdownV2 replies** — CommonMark in, properly-escaped Telegram out via `telegramify-markdown`. Code blocks, links, lists, the works.
 - **Image & file dispatch, both directions** — outbound via `[embed:path]` (auto-detects → photo, single-embed-with-caption fast path) or `[file:path]` (always a document). Inbound photos and documents are downloaded and surfaced to the agent so it can `Read` them with full vision support.
@@ -128,18 +128,6 @@ Each box is a single-purpose module:
 | `src/{progress-server,skill-discovery}.ts` | Localhost endpoint for hooks, slash-menu population |
 | `hooks/tool-progress.ts` | Pre/PostToolUse hook script |
 | `skills/setup/SKILL.md` | The `/cookiedclaw:setup` wizard |
-
-## Why tool progress continues after the reply
-
-Open the chat after a reply lands, and you'll often see the progress message keep updating with new tool events for several more seconds — `📖 Read: ./SOUL.md`, `✏️ Edit: ./IDENTITY.md`, etc. — even though the typing indicator stopped. This is intentional, and matches Claude Code's documented hook lifecycle.
-
-Per the [Claude Code hooks docs](https://code.claude.com/docs/en/hooks-guide.md), the `Stop` hook fires when "the main agentic loop's turn completes". `PreToolUse` / `PostToolUse` events you see streaming after `Stop` come from one of:
-
-- **`SubagentStop` activity** — when the agent dispatched a sub-agent via the `Agent` / `Task` tool, the sub-agent runs in its own loop. Its tool calls keep firing PreToolUse / PostToolUse hooks (in your CC session, via the same plugin), and the sub-agent finishes with `SubagentStop`, not the main `Stop`. The main `Stop` may fire well before the last sub-agent winds down.
-- **Async post-turn work** — the agent often kicks off bookkeeping after the visible reply: editing `IDENTITY.md` / `SOUL.md` based on what was learned, cleaning up scratch files, persisting context to Supermemory.
-- **Context housekeeping** — `PreCompact` / context-compaction hooks during session idle.
-
-cookiedclaw's `Stop` hook handler stops the typing indicator (the visible "agent is busy" signal) but **deliberately leaves the progress message and `pendingChats` alive**. That way every continued event flows into the same progress block, and the user gets a complete picture of what the bot did, not just the bits before the reply. Real state reset happens on the next user inbound, where `forwardToCC` starts a fresh tool log for the new turn.
 
 ## Workspace layout
 
