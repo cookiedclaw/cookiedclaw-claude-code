@@ -299,13 +299,27 @@ export function schedulePush(chatId: string): void {
 /**
  * Top-level hook ingest. Three phases:
  *  - `stop`: CC's main agent finished a response. Stop typing, but
- *    deliberately keep `pendingChats` and the progress message intact —
- *    CC fires Stop after the visible reply, yet the agent often
- *    continues with background work (sub-agents, post-reply edits,
- *    file cleanup). If we cleared state here those subsequent tool
- *    events would fan out to nobody. Real state reset happens on the
- *    next user inbound (forwardToCC), and the progress message survives
- *    as a chat-history record of what the bot did.
+ *    deliberately keep `pendingChats` and the progress message intact.
+ *
+ *    Per the Stop hook docs (https://code.claude.com/docs/en/hooks-guide
+ *    and https://code.claude.com/docs/en/hooks), Stop fires after the
+ *    main agentic loop's turn completes — strictly after all
+ *    PreToolUse/PostToolUse for that turn resolve. In practice we
+ *    routinely see tool events fire seconds after Stop, almost certainly
+ *    from one of:
+ *      • SubagentStop hooks for in-flight `Agent`/`Task` tool calls
+ *        (sub-agent tool events keep firing PreToolUse/PostToolUse via
+ *        our handler even though the *main* agent has stopped),
+ *      • async post-turn work the agent kicked off (background
+ *        edits to identity files, Bash cleanup, supermemory writes),
+ *      • PreCompact / context-housekeeping hooks during session idle.
+ *
+ *    Whatever the cause, those events are still "this turn's work" from
+ *    the user's perspective and should appear in their progress message.
+ *    Clearing pendingChats on Stop would render them invisible. State
+ *    actually resets on the next user inbound (forwardToCC), and the
+ *    progress message survives as a chat-history record of what the bot
+ *    did.
  *  - `pre` / `post`: tool progress event. Skips our own `reply`/`react`
  *    tools (they're the final output, not progress) and broadcasts to
  *    every chat in `pendingChats`.
