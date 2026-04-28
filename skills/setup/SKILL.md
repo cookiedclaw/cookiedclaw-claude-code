@@ -1,8 +1,8 @@
 ---
 name: setup
-description: One-click cookiedclaw setup — wires the current working directory as a self-contained agent workspace, downloads the gateway binary, writes systemd units, and gets the user one `systemctl start` away from a fully running daemon. Telegram bot token + identity files + Bearer-auth gateway + auto-restart. Runs from inside the workspace directory; idempotent on re-run.
+description: One-click cookiedclaw setup — wires the current working directory as a self-contained agent workspace, downloads the gateway binary, writes a single systemd unit, and gets the user one `systemctl start` away from a fully running daemon. Telegram bot token + identity files + Bearer-auth gateway + auto-restart + child-process supervision. Runs from inside the workspace directory; idempotent on re-run.
 disable-model-invocation: true
-allowed-tools: Bash(mkdir -p *) Bash(chmod 600 *) Bash(chmod 700 *) Bash(test *) Bash(pwd) Bash(ls *) Bash(uname *) Bash(command -v *) Bash(loginctl enable-linger *) Bash(loginctl show-user *) Bash(systemctl --user daemon-reload) Bash(systemctl --user enable *) Bash(systemctl --user is-active *) Bash(systemctl --user is-enabled *) Bash(id -un) Bash(getent passwd *) Bash(ps -e -o *) Bash(awk *) Bash(wc -l) Bash(curl -fsSL *) Bash(curl -fsSLo *) Bash(sha256sum *) Bash(openssl rand *) Bash(grep -q *) Bash(echo *) Read Write Edit
+allowed-tools: Bash(mkdir -p *) Bash(chmod 600 *) Bash(chmod 700 *) Bash(test *) Bash(pwd) Bash(ls *) Bash(uname *) Bash(command -v *) Bash(loginctl enable-linger *) Bash(loginctl show-user *) Bash(systemctl --user daemon-reload) Bash(systemctl --user enable *) Bash(systemctl --user disable *) Bash(systemctl --user is-active *) Bash(systemctl --user is-enabled *) Bash(systemctl --user stop *) Bash(systemctl --user reset-failed *) Bash(id -un) Bash(getent passwd *) Bash(ps -e -o *) Bash(awk *) Bash(wc -l) Bash(curl -fsSL *) Bash(curl -fsSLo *) Bash(sha256sum *) Bash(openssl rand *) Bash(grep -q *) Bash(echo *) Bash(rm -f *) Read Write Edit
 ---
 
 # cookiedclaw onboarding wizard
@@ -12,9 +12,10 @@ You are walking the user through one-click cookiedclaw setup in the **current wo
 - Workspace files (`CLAUDE.md`, `BOOTSTRAP.md`, `./.cookiedclaw/keys.env`) written.
 - `TELEGRAM_BOT_TOKEN` + `COOKIEDCLAW_GATEWAY_TOKEN` saved to `keys.env`, chmod 600.
 - Gateway binary downloaded from latest GitHub release, checksum-verified, in `~/.cookiedclaw/bin/`.
-- Two `systemd --user` units (`cookiedclaw-gateway.service` + `cookiedclaw.service`) written and enabled.
+- One `systemd --user` unit (`cookiedclaw-gateway.service`) written and enabled. The gateway supervises its own child Claude Code via `~/.cookiedclaw/launcher.sh` — no separate unit.
+- Any legacy `cookiedclaw.service` from older installs is stopped + disabled + removed (the gateway now owns CC supervision).
 - `loginctl enable-linger` confirmed.
-- The user is one `systemctl --user start cookiedclaw-gateway cookiedclaw` away from a running daemon.
+- The user is one `systemctl --user start cookiedclaw-gateway` away from a running daemon.
 
 The whole thing is **one slash command** — there's no follow-up `enable-daemon` skill to invoke. Each workspace = one independent agent (own bot, own identity, own paired users). For multi-workspace, rerun this skill from a different empty directory.
 
@@ -237,20 +238,32 @@ if [ "$COUNT" -gt 1 ]; then
 fi
 ```
 
-### 4c. Existing units from a different workspace
+### 4c. Existing units from a different workspace + legacy unit cleanup
 
-If `~/.config/systemd/user/cookiedclaw.service` or `~/.config/systemd/user/cookiedclaw-gateway.service` already exists, read them and check whether the workspace path baked in matches the current `pwd`. If they differ, **abort** with:
+If `~/.config/systemd/user/cookiedclaw-gateway.service` already exists, read it and check whether the workspace path baked in matches the current `pwd`. If they differ, **abort** with:
 
-> Existing cookiedclaw units already point at a different workspace. The default unit names only hold one workspace at a time. To run multiple cookiedclaw daemons, use templated units (`cookiedclaw@<workspace>.service`) — that's a follow-up, not part of this wizard yet.
+> Existing cookiedclaw units already point at a different workspace. The default unit name only holds one workspace at a time. To run multiple cookiedclaw daemons, use templated units (`cookiedclaw-gateway@<workspace>.service`) — that's a follow-up, not part of this wizard yet.
 
-If they point at the current workspace, this is a re-run. **Stop them before overwriting** — otherwise a running v0.4.x-style daemon keeps polling Telegram while we rewrite its launcher underneath, which causes a mid-flight Telegram 409 and confuses the user about which version is live:
+If it points at the current workspace, this is a re-run. **Stop it before overwriting** — otherwise the running daemon keeps polling Telegram while we rewrite its launcher underneath, which causes a mid-flight Telegram 409 and confuses the user about which version is live:
 
 ```bash
-systemctl --user stop cookiedclaw cookiedclaw-gateway 2>/dev/null || true
-systemctl --user reset-failed cookiedclaw cookiedclaw-gateway 2>/dev/null || true
+# Stop the gateway unit (current name).
+systemctl --user stop cookiedclaw-gateway 2>/dev/null || true
+systemctl --user reset-failed cookiedclaw-gateway 2>/dev/null || true
+
+# Legacy: older versions installed a SECOND unit (`cookiedclaw.service`)
+# that ran the launcher independently. The gateway now supervises CC
+# itself, so this unit is obsolete — disable, stop, and remove it so the
+# next `systemctl start cookiedclaw-gateway` doesn't race a leftover.
+if test -f "$HOME/.config/systemd/user/cookiedclaw.service"; then
+  systemctl --user stop cookiedclaw 2>/dev/null || true
+  systemctl --user disable cookiedclaw 2>/dev/null || true
+  systemctl --user reset-failed cookiedclaw 2>/dev/null || true
+  rm -f "$HOME/.config/systemd/user/cookiedclaw.service"
+fi
 ```
 
-After stop, proceed with the rest of Step 4 — the new launcher / unit files / binary will overwrite cleanly, and the user gets to start the new daemon explicitly at the end (Step 5).
+After stop, proceed with the rest of Step 4 — the new launcher / unit file / binary will overwrite cleanly, and the user gets to start the new daemon explicitly at the end (Step 5).
 
 ### 4d. Linger
 
@@ -320,14 +333,18 @@ cd -
 
 If checksum fails, abort and bin the partial download — don't "retry without verifying", that's where supply-chain bugs slip in.
 
-### 4g. Launcher script (CC daemon side)
+### 4g. Launcher script (spawned by the gateway supervisor)
+
+The gateway spawns this launcher as its child. The launcher does the rc-source + env-export dance (systemd's `--user` PATH is too minimal to find `claude`/`bun`/`tmux` reliably), starts CC inside a tmux session so the user can `tmux attach -t cookiedclaw` to watch the live TUI, and then blocks until that tmux session ends so the gateway sees the child exit and triggers a respawn.
 
 ```bash
 mkdir -p "$HOME/.cookiedclaw"
 
 cat > "$HOME/.cookiedclaw/launcher.sh" <<EOF
 #!/usr/bin/env bash
-# cookiedclaw CC-daemon launcher — generated by /cookiedclaw:setup
+# cookiedclaw CC launcher — generated by /cookiedclaw:setup
+# Run as the gateway's supervised child. The gateway re-spawns this on
+# exit (with backoff) and on watchdog/disconnect/restart_runtime triggers.
 set -euo pipefail
 WORKSPACE='${WORKSPACE}'
 SESSION='cookiedclaw'
@@ -360,11 +377,37 @@ set +a
 
 cd "\$WORKSPACE"
 
+# Recycle the tmux session — kill any straggler from a hard kill of a
+# previous launcher run before opening a fresh one.
 tmux kill-session -t "\$SESSION" 2>/dev/null || true
+
+# Run claude inside tmux so the user can attach with \`tmux attach -t
+# cookiedclaw\` and see the live TUI. \`set-option remain-on-exit off\`
+# (the tmux default) guarantees the session terminates the moment claude
+# exits — without that, a dead claude inside a "remain-on-exit on" pane
+# would keep the tmux session alive forever and the launcher's wait
+# loop below would never return, hiding the failure from the gateway.
 tmux new-session -d -s "\$SESSION" \\
   'claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw-claude-code --continue'
+tmux set-option -t "\$SESSION" remain-on-exit off >/dev/null 2>&1 || true
 
+# Block while the tmux session is alive. When claude exits, tmux exits,
+# the launcher exits, the gateway's supervisor sees the child exit and
+# respawns us with backoff. \`pgrep claude\` is also checked so a wedged
+# tmux session with a dead inner claude (rare, but happens) doesn't
+# leave us hanging forever — if claude is gone for two consecutive
+# polls, we exit so the supervisor can restart.
+DEAD_POLLS=0
 while tmux has-session -t "\$SESSION" 2>/dev/null; do
+  if pgrep -u "\$USER" -f '^claude( |\$)' >/dev/null 2>&1; then
+    DEAD_POLLS=0
+  else
+    DEAD_POLLS=\$((DEAD_POLLS + 1))
+    if [ "\$DEAD_POLLS" -ge 2 ]; then
+      tmux kill-session -t "\$SESSION" 2>/dev/null || true
+      break
+    fi
+  fi
   sleep 5
 done
 EOF
@@ -372,16 +415,16 @@ EOF
 chmod 700 "$HOME/.cookiedclaw/launcher.sh"
 ```
 
-If tmux is unavailable, swap the `tmux …` block for `script -qfc 'claude … --continue' /dev/null` (script(1) fallback).
+If tmux is unavailable, swap the `tmux …` block for `script -qfc 'claude … --continue' /dev/null` (script(1) fallback). The user loses `tmux attach`, but the supervisor's restart-on-exit still works.
 
-### 4h. Two systemd units
+### 4h. One systemd unit
 
-`mkdir -p ~/.config/systemd/user/`, then write **gateway** unit:
+`mkdir -p ~/.config/systemd/user/`, then write the **gateway** unit. The gateway spawns and supervises the launcher (Step 4g) itself — there's no separate `cookiedclaw.service` unit anymore; that supervision moved into the gateway code. `TimeoutStopSec=30` gives the gateway time to send SIGTERM to its child, wait the 10s grace, and exit cleanly.
 
 ```bash
 cat > "$HOME/.config/systemd/user/cookiedclaw-gateway.service" <<EOF
 [Unit]
-Description=cookiedclaw gateway — MCP-over-HTTP + Telegram polling
+Description=cookiedclaw gateway — MCP-over-HTTP + Telegram polling + CC supervisor
 After=network-online.target
 Wants=network-online.target
 
@@ -390,49 +433,24 @@ Type=simple
 EnvironmentFile=${WORKSPACE}/.cookiedclaw/keys.env
 Environment=GATEWAY_PORT=47390
 Environment=WORKSPACE=${WORKSPACE}
+Environment=COOKIEDCLAW_LAUNCHER=%h/.cookiedclaw/launcher.sh
 WorkingDirectory=${WORKSPACE}
 ExecStart=%h/.cookiedclaw/bin/cookiedclaw-gateway
 Restart=always
 RestartSec=5
 TimeoutStartSec=30
-TimeoutStopSec=20
+TimeoutStopSec=30
 
 [Install]
 WantedBy=default.target
 EOF
 ```
-
-…and **CC daemon** unit (depends on the gateway being up):
-
-```bash
-cat > "$HOME/.config/systemd/user/cookiedclaw.service" <<EOF
-[Unit]
-Description=cookiedclaw — Claude Code session connected to the gateway
-After=cookiedclaw-gateway.service network-online.target
-Wants=cookiedclaw-gateway.service network-online.target
-Requires=cookiedclaw-gateway.service
-
-[Service]
-Type=simple
-Environment=WORKSPACE=${WORKSPACE}
-ExecStart=%h/.cookiedclaw/launcher.sh
-Restart=always
-RestartSec=5
-TimeoutStartSec=30
-TimeoutStopSec=20
-
-[Install]
-WantedBy=default.target
-EOF
-```
-
-The `Requires=` + `After=` make systemd start the gateway first and stop the CC daemon if the gateway dies — adapter is useless without gateway anyway.
 
 ### 4i. Reload + enable
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable cookiedclaw-gateway cookiedclaw
+systemctl --user enable cookiedclaw-gateway
 ```
 
 Do **not** `start` here — would 409-collide with the user's currently-running ad-hoc `claude` (Step 4b's pgrep check rejected concurrent claudes already, but the user might launch one between steps; safer to keep `start` an explicit user act).
@@ -462,7 +480,7 @@ Then jump straight to Step 5 wrap-up.
 
 ## Step 5 — Wrap up
 
-Summarize what got configured (workspace path, files written, units enabled). Then send the switch-over instructions:
+Summarize what got configured (workspace path, files written, unit enabled). Then send the switch-over instructions:
 
 ````
 ✓ Setup complete.
@@ -477,19 +495,22 @@ NEXT STEP — exit this terminal first.
 
 Then start the daemon (any terminal):
 
-       systemctl --user start cookiedclaw-gateway cookiedclaw
+       systemctl --user start cookiedclaw-gateway
 
-The gateway starts first; CC follows once it's up. DM your bot —
-Cookie should answer from inside the daemon within a few seconds.
+That's the only unit now. The gateway boots Telegram + MCP, then spawns
+its own child Claude Code (via ~/.cookiedclaw/launcher.sh) and watches
+it — restarting on exit, on MCP disconnect, or on the agent calling
+restart_runtime. DM your bot — Cookie should answer within a few seconds.
 
 Future operations:
   • Restart from Telegram:   /cookiedclaw:daemon-restart
   • Health check:            /cookiedclaw:daemon-status
+                              (or `curl http://127.0.0.1:47390/health`)
   • Live-watch CC TUI:       tmux attach -t cookiedclaw
-  • Live logs:               journalctl --user -fu cookiedclaw{,-gateway}
+  • Live logs:               journalctl --user -fu cookiedclaw-gateway
 
 Roll back:
-  systemctl --user disable --now cookiedclaw cookiedclaw-gateway
+  systemctl --user disable --now cookiedclaw-gateway
   rm -rf ~/.cookiedclaw/bin
 ````
 
@@ -516,3 +537,4 @@ Optional integrations (independent skills, won't re-trigger this whole flow):
 - Don't push optional integrations. If the user says "skip" or "later", accept and move on.
 - Don't try to "repair" a checksum mismatch by re-downloading or skipping verification — abort instead.
 - Don't `systemctl start` here. The user is still inside an ad-hoc `claude`; starting the daemon would 409 against Telegram. The wizard ends with `enable`, not `start`.
+- Don't write a separate `cookiedclaw.service` unit. CC supervision lives inside the gateway now (`startSupervisor()` in `src/supervisor.ts`); a second unit would race the gateway's child and re-create the 409 conflict that motivated dropping it.
