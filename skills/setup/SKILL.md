@@ -2,7 +2,7 @@
 name: setup
 description: One-click cookiedclaw setup — wires the current working directory as a self-contained agent workspace, downloads the gateway binary, writes a single systemd unit, and gets the user one `systemctl start` away from a fully running daemon. Telegram bot token + identity files + Bearer-auth gateway + auto-restart + child-process supervision. Runs from inside the workspace directory; idempotent on re-run.
 disable-model-invocation: true
-allowed-tools: Bash(mkdir -p *) Bash(chmod 600 *) Bash(chmod 700 *) Bash(test *) Bash(pwd) Bash(ls *) Bash(uname *) Bash(command -v *) Bash(loginctl enable-linger *) Bash(loginctl show-user *) Bash(systemctl --user daemon-reload) Bash(systemctl --user enable *) Bash(systemctl --user disable *) Bash(systemctl --user is-active *) Bash(systemctl --user is-enabled *) Bash(systemctl --user stop *) Bash(systemctl --user reset-failed *) Bash(id -un) Bash(getent passwd *) Bash(ps -e -o *) Bash(awk *) Bash(wc -l) Bash(curl -fsSL *) Bash(curl -fsSLo *) Bash(sha256sum *) Bash(openssl rand *) Bash(grep -q *) Bash(echo *) Bash(rm -f *) Read Write Edit
+allowed-tools: Bash(mkdir -p *) Bash(chmod 600 *) Bash(chmod 700 *) Bash(test *) Bash(pwd) Bash(ls *) Bash(uname *) Bash(command -v *) Bash(loginctl enable-linger *) Bash(loginctl show-user *) Bash(systemctl --user daemon-reload) Bash(systemctl --user enable *) Bash(systemctl --user disable *) Bash(systemctl --user is-active *) Bash(systemctl --user is-enabled *) Bash(systemctl --user stop *) Bash(systemctl --user reset-failed *) Bash(id -un) Bash(getent passwd *) Bash(ps -e -o *) Bash(awk *) Bash(wc -l) Bash(curl -fsSL *) Bash(curl -fsSLo *) Bash(sha256sum *) Bash(openssl rand *) Bash(grep -q *) Bash(echo *) Bash(rm -f *) Bash(python3 *) Read Write Edit
 ---
 
 # cookiedclaw onboarding wizard
@@ -264,6 +264,25 @@ fi
 ```
 
 After stop, proceed with the rest of Step 4 — the new launcher / unit file / binary will overwrite cleanly, and the user gets to start the new daemon explicitly at the end (Step 5).
+
+### 4cc. Pre-accept the development-channel dialog
+
+The launcher invokes claude with `--dangerously-load-development-channels`, which on the first run pops a "press Enter to accept" confirmation. The daemon has no interactive TTY (the supervisor + tmux own it, the user isn't watching), so claude blocks forever and the supervisor's boot-grace expires in a restart loop. The bypass is the `skipDangerousModePermissionPrompt` flag in `~/.claude/settings.json`. Merge-write it (don't overwrite — the file usually has other keys: `enabledPlugins`, `permissions`, `effortLevel`, etc.):
+
+```bash
+SETTINGS="$HOME/.claude/settings.json"
+mkdir -p "$HOME/.claude"
+python3 - <<'PY'
+import json, os
+p = os.path.expanduser("~/.claude/settings.json")
+d = json.load(open(p)) if os.path.exists(p) else {}
+if d.get("skipDangerousModePermissionPrompt") is not True:
+    d["skipDangerousModePermissionPrompt"] = True
+    json.dump(d, open(p, "w"), indent=2)
+PY
+```
+
+If python3 isn't available, fall back to a careful `jq` invocation or instruct the user to add the line by hand. The setting is per-user (not per-workspace), so this only needs to land once across all cookiedclaw daemons on the host.
 
 ### 4d. Linger
 
