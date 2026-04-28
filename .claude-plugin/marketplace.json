@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "cookiedclaw-claude-code",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Claude Code adapter for cookiedclaw — wires CC into the cookiedclaw gateway so you can DM your session over Telegram with live tool progress, permission relay, and image dispatch.",
   "owner": {
     "name": "Timur Turatbekov"
@@ -10,7 +10,7 @@
     {
       "name": "cookiedclaw",
       "description": "Claude Code plugin that turns any Telegram chat into a frontend for your CC session. Live tool progress, MarkdownV2 replies, permission relay with inline buttons, image and file dispatch both ways, pairing flow, persistent identity workspace.",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "source": "./",
       "category": "integration",
       "author": {
