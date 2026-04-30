@@ -109,6 +109,7 @@ claude plugin uninstall cookiedclaw@cookiedclaw-claude-code
 ## Related
 
 - **[cookiedclaw/cookiedclaw](https://github.com/cookiedclaw/cookiedclaw)** — the universal gateway (binary you just installed)
+- **[cookiedclaw/cookiedclaw-cursor](https://github.com/cookiedclaw/cookiedclaw-cursor)** — sibling Cursor IDE adapter (same gateway, different runtime)
 - **[landing](https://cookiedclaw.com)** — pitch page
 - **[org profile](https://github.com/cookiedclaw)** — family of `cookiedclaw-*` adapters
 
