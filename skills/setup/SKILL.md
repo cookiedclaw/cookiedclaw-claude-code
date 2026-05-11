@@ -2,7 +2,7 @@
 name: setup
 description: Configures the current working directory as a self-contained cookiedclaw agent workspace — Telegram bot token, identity files, GATEWAY_TOKEN, systemd unit, and child-process supervision. Assumes the `cookiedclaw-gateway` binary is already installed (via `curl -fsSL https://cookiedclaw.com/install.sh | bash`); if it isn't, the skill points the user at the one-liner and exits. Idempotent on re-run.
 disable-model-invocation: true
-allowed-tools: Bash(mkdir -p *) Bash(chmod 600 *) Bash(chmod 700 *) Bash(test *) Bash(pwd) Bash(ls *) Bash(uname *) Bash(command -v *) Bash(loginctl enable-linger *) Bash(loginctl show-user *) Bash(systemctl --user daemon-reload) Bash(systemctl --user enable *) Bash(systemctl --user disable *) Bash(systemctl --user is-active *) Bash(systemctl --user is-enabled *) Bash(systemctl --user stop *) Bash(systemctl --user reset-failed *) Bash(id -un) Bash(getent passwd *) Bash(ps -e -o *) Bash(awk *) Bash(wc -l) Bash(openssl rand *) Bash(grep -q *) Bash(echo *) Bash(rm -f *) Bash(python3 *) Bash(*/cookiedclaw-gateway --version) Read Write Edit
+allowed-tools: Bash(mkdir -p *) Bash(chmod 600 *) Bash(chmod 700 *) Bash(test *) Bash(pwd) Bash(ls *) Bash(uname *) Bash(command -v *) Bash(loginctl enable-linger *) Bash(loginctl show-user *) Bash(systemctl --user daemon-reload) Bash(systemctl --user enable *) Bash(systemctl --user disable *) Bash(systemctl --user is-active *) Bash(systemctl --user is-enabled *) Bash(systemctl --user stop *) Bash(systemctl --user reset-failed *) Bash(id -un) Bash(getent passwd *) Bash(ps -e -o *) Bash(awk *) Bash(wc -l) Bash(openssl rand *) Bash(grep -q *) Bash(echo *) Bash(rm -f *) Bash(*/cookiedclaw-gateway --version) Read Write Edit
 ---
 
 # cookiedclaw workspace setup
@@ -266,22 +266,21 @@ After stop, proceed with the rest of Step 4 — the new launcher / unit file wil
 
 ### 4cc. Pre-accept the development-channel dialog
 
-The launcher invokes claude with `--dangerously-load-development-channels`, which on the first run pops a "press Enter to accept" confirmation. The daemon has no interactive TTY (the supervisor + tmux own it, the user isn't watching), so claude blocks forever and the supervisor's boot-grace expires in a restart loop. The bypass is the `skipDangerousModePermissionPrompt` flag in `~/.claude/settings.json`. Merge-write it (don't overwrite — the file usually has other keys: `enabledPlugins`, `permissions`, `effortLevel`, etc.):
+The launcher invokes claude with `--dangerously-load-development-channels`. On the first invocation per host, CC pops a "press Enter to accept" confirmation. The daemon has no interactive TTY (the supervisor + tmux own it, the user isn't watching), so claude blocks forever on this prompt and the supervisor's boot-grace expires in a restart loop.
 
-```bash
-SETTINGS="$HOME/.claude/settings.json"
-mkdir -p "$HOME/.claude"
-python3 - <<'PY'
-import json, os
-p = os.path.expanduser("~/.claude/settings.json")
-d = json.load(open(p)) if os.path.exists(p) else {}
-if d.get("skipDangerousModePermissionPrompt") is not True:
-    d["skipDangerousModePermissionPrompt"] = True
-    json.dump(d, open(p, "w"), indent=2)
-PY
-```
+There is **no `settings.json` bypass** for this specific prompt — the `skipDangerousModePermissionPrompt` flag covers a different dialog and won't dismiss the dev-channels acceptance. The clean fix is to accept it manually once, before enabling the daemon. CC remembers the acceptance per-user, so this is genuinely a one-time setup ritual across all cookiedclaw workspaces on the host.
 
-If python3 isn't available, fall back to a careful `jq` invocation or instruct the user to add the line by hand. The setting is per-user (not per-workspace), so this only needs to land once across all cookiedclaw daemons on the host.
+Tell the user:
+
+> Before I enable the daemon, I need you to dismiss CC's one-time dev-channels dialog. Open another terminal and run:
+>
+> ```
+> claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw-claude-code
+> ```
+>
+> When the "press Enter to accept" prompt appears, hit Enter. Then `Ctrl+C` twice to exit. That's it — CC has stored the acceptance for your user and the daemon won't hit it.
+
+After they confirm they've done this, continue. If they haven't, the `systemctl start` at the end of the wizard will produce a daemon that boots, hangs, restarts every few minutes, and never serves Telegram — frustrating to debug after the fact.
 
 ### 4d. Linger
 
