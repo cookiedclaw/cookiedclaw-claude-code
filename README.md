@@ -17,12 +17,19 @@
 
 ## Install
 
+Two steps: gateway binary, then the CC plugin + workspace.
+
 ```bash
+# 1. Gateway binary (~64 MB, sha256-verified, lands in ~/.cookiedclaw/bin/)
+curl -fsSL https://cookiedclaw.com/install.sh | bash
+
+# 2. Plugin
 claude plugin marketplace add cookiedclaw/cookiedclaw-claude-code
 claude plugin install cookiedclaw@cookiedclaw-claude-code
 
+# 3. Workspace
 mkdir -p ~/cookiedclaw && cd ~/cookiedclaw
-claude --enable-auto-mode --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw-claude-code
+claude --dangerously-load-development-channels plugin:cookiedclaw@cookiedclaw-claude-code
 ```
 
 Inside that CC session:
@@ -31,16 +38,24 @@ Inside that CC session:
 /cookiedclaw:setup
 ```
 
-That single wizard does **everything** — BotFather token, identity files, downloads the [gateway](https://github.com/cookiedclaw/cookiedclaw) binary from latest release, generates an MCP Bearer token, writes two `systemd --user` units, enables linger. When it's done:
+The wizard handles the per-workspace bits — BotFather token, identity files (`IDENTITY.md`, `USER.md`, `SOUL.md`), `COOKIEDCLAW_GATEWAY_TOKEN`, `systemd --user` unit, linger. When it's done:
 
 ```bash
-^C                                                       # exit ad-hoc claude
-systemctl --user start cookiedclaw-gateway cookiedclaw   # start the daemon
+^C                                                # exit ad-hoc claude
+systemctl --user start cookiedclaw-gateway        # start the daemon
 ```
 
 DM your bot. Cookie answers.
 
 > Linux only for the daemon part. macOS / BSD users get a tmux fallback (no auto-restart).
+
+### Upgrading the gateway
+
+```bash
+cookiedclaw-gateway update      # or rerun curl -fsSL .../install.sh | bash — same effect
+```
+
+Fetches the latest release, sha256-verifies, atomic-swaps, restarts the systemd unit if it's active.
 
 ## What you get
 
@@ -76,7 +91,7 @@ Telegram ◄─poll─► cookiedclaw gateway      <- always-on, systemd-managed
                    hooks fire on tool use)       gateway endpoint
 ```
 
-Two `systemd --user` units: `cookiedclaw-gateway.service` (the binary) and `cookiedclaw.service` (CC daemon, depends on the gateway).
+One `systemd --user` unit: `cookiedclaw-gateway.service`. The gateway supervises its own child Claude Code process (via `~/.cookiedclaw/launcher.sh`) — there's no separate daemon unit.
 
 > Your Max subscription is billed as a subscription. Because cookiedclaw runs inside Claude Code (not via the Anthropic SDK), Max-included usage applies normally — no surprise extra-API charges. If you already pay for Claude Max, cookiedclaw is effectively free to run.
 
@@ -94,15 +109,15 @@ Each workspace = one independent agent. Multiple agents = multiple workspace dir
     └── inbox/                  ← downloaded attachments
 
 ~/.cookiedclaw/
-├── bin/cookiedclaw-gateway     ← gateway binary, downloaded by setup
-└── launcher.sh                 ← CC daemon entrypoint
+├── bin/cookiedclaw-gateway     ← gateway binary (installed by install.sh, updated by `cookiedclaw-gateway update`)
+└── launcher.sh                 ← CC daemon entrypoint (written by /cookiedclaw:setup)
 ```
 
 ## Roll back
 
 ```bash
-systemctl --user disable --now cookiedclaw cookiedclaw-gateway
-rm -rf ~/.cookiedclaw/bin
+systemctl --user disable --now cookiedclaw-gateway
+rm -rf ~/.cookiedclaw
 claude plugin uninstall cookiedclaw@cookiedclaw-claude-code
 ```
 
